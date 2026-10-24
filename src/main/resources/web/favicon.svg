@@ -1,0 +1,17 @@
+<!--
+  CarbonGuard
+  Copyright (C) 2026 chaihuu
+  SPDX-License-Identifier: GPL-3.0-only
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="CarbonGuard">
+  <defs>
+    <linearGradient id="g" x1="8" y1="4" x2="58" y2="62" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#7cf0dd"/>
+      <stop offset="1" stop-color="#3f8cff"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="#08111f"/>
+  <path d="M32 8 53 16v14c0 12-8.8 21.4-21 26C20 51.4 11 42 11 30V16L32 8Z" fill="none" stroke="url(#g)" stroke-width="4"/>
+  <path d="M23 32.5 29 38l12-13" fill="none" stroke="#7cf0dd" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

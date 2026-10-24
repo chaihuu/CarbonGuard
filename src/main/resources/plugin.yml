@@ -1,0 +1,25 @@
+# CarbonGuard
+# Copyright (C) 2026 chaihuu
+# SPDX-License-Identifier: GPL-3.0-only
+
+name: CarbonGuard
+version: '${version}'
+main: xyz.chaihu.carbonguard.CarbonGuardPlugin
+api-version: '26.2'
+description: Paper 26.2 access control with Geyser real IP, XUID identity, IP limits, QQ e-mail binding, and review panel.
+authors: [chaihu]
+website: https://github.com/chaihuu/CarbonGuard
+softdepend:
+  - floodgate
+  - Geyser-Spigot
+  - Geyser
+commands:
+  carbonguard:
+    description: CarbonGuard administration
+    usage: /carbonguard help
+    aliases: [cg, carbon]
+    permission: carbonguard.admin
+permissions:
+  carbonguard.admin:
+    description: Full access to CarbonGuard commands
+    default: op

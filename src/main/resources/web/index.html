@@ -1,0 +1,193 @@
+<!doctype html>
+<!--
+  CarbonGuard
+  Copyright (C) 2026 chaihuu
+  SPDX-License-Identifier: GPL-3.0-only
+  See the LICENSE file for the full license text.
+-->
+
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="robots" content="noindex,nofollow">
+  <title>CarbonGuard · Paper 26.2 综合管控</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="/" aria-label="CarbonGuard 首页">
+    <img src="/favicon.svg" alt="" width="28" height="28">
+    <span>CarbonGuard</span>
+    <small>Paper 26.2</small>
+  </a>
+  <nav class="tabs" aria-label="主导航">
+    <button class="tab" type="button" data-page="bind">绑定验证</button>
+    <button class="tab" type="button" data-page="bans">封禁查询</button>
+    <button class="tab" type="button" data-page="stats">统计概览</button>
+  </nav>
+  <button id="key-button" class="key-button" type="button" title="管理密钥">管理密钥</button>
+</header>
+
+<main class="shell">
+  <section id="admin-unlock" class="panel unlock hidden" aria-labelledby="unlock-title">
+    <div>
+      <p class="eyebrow">ADMIN</p>
+      <h2 id="unlock-title">输入管理密钥</h2>
+      <p class="muted">密钥仅保存在当前标签页的 sessionStorage，不会写入 Cookie。管理接口按 IP 限速。</p>
+    </div>
+    <div class="unlock-side">
+      <form id="unlock-form" class="inline-form" autocomplete="off">
+        <label class="sr-only" for="admin-key">管理密钥</label>
+        <input id="admin-key" name="key" type="password" minlength="24" maxlength="512"
+               placeholder="web.admin-key" required autocomplete="off">
+        <button class="primary" type="submit">解锁</button>
+      </form>
+      <p id="unlock-status" class="status" role="status" aria-live="polite"></p>
+    </div>
+  </section>
+
+  <section id="page-bind" class="page" aria-labelledby="bind-title">
+    <div class="hero">
+      <p class="eyebrow">ACCOUNT BINDING</p>
+      <h1 id="bind-title">验证 QQ 邮箱，绑定游戏身份</h1>
+      <p class="lede">绑定过程使用一次性链接与一次性验证码。验证码 10 分钟失效，成功后不可复用。</p>
+    </div>
+
+    <div id="bind-no-token" class="panel hidden">
+      <h2>需要服务器生成的绑定链接</h2>
+      <p class="muted">未绑定玩家登录时会被拒绝，踢出消息中包含专属链接。你也可以粘贴链接里的绑定令牌。</p>
+      <form id="manual-token-form" class="inline-form" autocomplete="off">
+        <label class="sr-only" for="manual-token">绑定令牌</label>
+        <input id="manual-token" type="text" maxlength="256" placeholder="粘贴绑定令牌" required autocomplete="off">
+        <button class="primary" type="submit">继续</button>
+      </form>
+      <p id="bind-error" class="status" role="status" aria-live="polite"></p>
+    </div>
+
+    <div id="bind-ticket" class="panel hidden">
+      <div class="identity-card">
+        <div>
+          <span class="label">待绑定玩家</span>
+          <strong id="bind-player">—</strong>
+        </div>
+        <div>
+          <span class="label">链接有效期</span>
+          <strong id="bind-expiry">—</strong>
+        </div>
+        <div>
+          <span class="label">身份类型</span>
+          <strong id="bind-identity-type">—</strong>
+        </div>
+      </div>
+
+      <form id="bind-form" class="stack" autocomplete="off">
+        <div class="field">
+          <label for="bind-email">QQ 邮箱</label>
+          <input id="bind-email" type="email" maxlength="254" placeholder="123456789@qq.com" required>
+          <p id="email-hint" class="hint">仅允许配置中列出的 QQ 邮箱域名。</p>
+        </div>
+        <div class="field">
+          <label for="bind-qq">QQ 号</label>
+          <input id="bind-qq" type="text" inputmode="numeric" pattern="[1-9][0-9]{4,11}"
+                 maxlength="12" placeholder="5-12 位 QQ 号" required>
+        </div>
+        <div class="actions">
+          <button id="send-code" class="primary" type="submit">发送验证码</button>
+          <button id="reset-code" class="ghost hidden" type="button">重新发送</button>
+        </div>
+      </form>
+
+      <form id="code-form" class="stack hidden" autocomplete="off">
+        <div class="field">
+          <label for="bind-code">邮箱验证码</label>
+          <input id="bind-code" type="text" inputmode="numeric" pattern="[0-9]{6}"
+                 minlength="6" maxlength="6" placeholder="6 位数字" required>
+          <p id="code-hint" class="hint"></p>
+        </div>
+        <div class="actions">
+          <button class="primary" type="submit">验证并绑定</button>
+        </div>
+      </form>
+
+      <div id="bind-success" class="success hidden" role="status">
+        <strong>绑定完成</strong>
+        <p>请重新连接服务器。若服务器仍提示未绑定，请等待几秒后重试。</p>
+      </div>
+      <p id="bind-status" class="status" role="status" aria-live="polite"></p>
+    </div>
+  </section>
+
+  <section id="page-bans" class="page hidden" aria-labelledby="bans-title">
+    <div class="hero compact">
+      <p class="eyebrow">BAN &amp; REVIEW</p>
+      <h1 id="bans-title">封禁查询与待审复核</h1>
+      <p class="lede">按玩家名、XUID、UUID、封禁编号或关联 IP 查询。解封会同时清除该封禁的 IP 关联。</p>
+    </div>
+
+    <div id="bans-content" class="admin-content hidden">
+      <div class="panel">
+        <form id="ban-search-form" class="inline-form" autocomplete="off">
+          <label class="sr-only" for="ban-query">查询</label>
+          <input id="ban-query" type="search" maxlength="100" placeholder="玩家名 / XUID / UUID / #编号 / IP">
+          <button class="primary" type="submit">查询</button>
+          <button id="ban-refresh" class="ghost" type="button">刷新待审</button>
+        </form>
+        <p id="bans-status" class="status" role="status" aria-live="polite"></p>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h2>待审队列</h2>
+          <span id="review-count" class="badge">0</span>
+        </div>
+        <p class="hint">“通过”仅记录复核结果；“拒绝”会踢出该玩家的当前在线会话但不新增封禁；“解封”会解除关联封禁并清除 IP 关联。</p>
+        <div id="review-list" class="list"></div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h2>封禁记录</h2>
+          <span id="ban-count" class="badge">0</span>
+        </div>
+        <div id="ban-list" class="list"></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="page-stats" class="page hidden" aria-labelledby="stats-title">
+    <div class="hero compact">
+      <p class="eyebrow">OVERVIEW</p>
+      <h1 id="stats-title">运行统计</h1>
+      <p class="lede">统计来自登录事件与内存在线会话，不会参与登录判定。</p>
+    </div>
+
+    <div id="stats-content" class="admin-content hidden">
+      <p id="stats-status" class="status" role="status" aria-live="polite"></p>
+      <div id="stat-cards" class="stat-grid"></div>
+      <div class="panel">
+        <div class="panel-head">
+          <h2>登录趋势</h2>
+          <span class="hint">允许 / 拒绝</span>
+        </div>
+        <div id="login-chart" class="chart"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><h2>模块状态</h2></div>
+        <div id="module-grid" class="module-grid"></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="footer">
+  <span>CarbonGuard · Paper 26.2 + Adventure 5 · <a href="https://github.com/chaihuu/CarbonGuard" rel="noopener noreferrer">源码</a> · GPL-3.0-only</span>
+  <span>管理操作会被记录。请通过 HTTPS 反向代理暴露面板。</span>
+</footer>
+
+<noscript>此面板需要启用 JavaScript。</noscript>
+</body>
+</html>

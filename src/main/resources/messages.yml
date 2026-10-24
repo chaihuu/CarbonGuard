@@ -1,0 +1,66 @@
+# CarbonGuard
+# Copyright (C) 2026 chaihuu
+# SPDX-License-Identifier: GPL-3.0-only
+
+# CarbonGuard messages
+# 支持 & 颜色代码。{placeholder} 由插件替换，请勿删除必需占位符。
+prefix: "&8[&bCarbonGuard&8] &r"
+
+kick:
+  banned: |-
+    &c你已被服务器封禁
+    &7原因: &f{reason}
+    &7到期: &f{expires}
+    &7操作者: &f{banned_by}
+  ip-limit: |-
+    &c你的网络出口登录账号过多，已拒绝本次登录
+    &7当前 IP: &f{ip}
+    &7活跃账号: &f{active} &7/ 硬上限 &f{hard_limit}
+    &7（基础上限 {limit} + 宽限 {grace}）
+    &7共享网络（NAT/校园网/公司）请使用固定出口或联系管理员。
+  ip-association: |-
+    &c你的 IP 与一个封禁账号关联，已拒绝本次登录
+    &7关联账号: &f{banned_player}
+    &7封禁原因: &f{reason}
+    &7封禁到期: &f{expires}
+    &7如果你使用的是共享网络，请联系管理员复核。
+  review-rejected: |-
+    &c本次登录已被管理员复核拒绝
+    &7如你认为这是共享 IP 误判，请联系管理员说明情况。
+  unbound: |-
+    &b请至网页面板验证 QQ 邮箱并绑定 QQ 号
+    &f{url}
+    &7身份: &f{identity}
+    &7验证码 10 分钟内有效，绑定链接也有时效。
+    &7完成后重新连接服务器即可。
+
+command:
+  no-permission: "{prefix}&c你没有权限执行该命令。"
+  help: |-
+    {prefix}&bCarbonGuard 命令
+    &7/carbonguard status [玩家] &8- &f查看模块/玩家状态
+    &7/carbonguard ban <玩家> [时长] [原因] &8- &f封禁，时长如 7d、12h，省略为永久
+    &7/carbonguard unban <玩家|#编号> &8- &f解封并清除关联
+    &7/carbonguard reload &8- &f重载配置并重启 Web 面板
+  status-server: |-
+    {prefix}&b运行状态
+    &7集成: &f{integrations}
+    &7Web: &f{web} &7| 未绑定拦截: &f{gate}
+    &7在线会话: &f{online} &7| 已绑定: &f{bindings} &7| IP 关联: &f{associations}
+  status-player: |-
+    {prefix}&b玩家状态: &f{player}
+    &7身份: &f{identity} &8(&f{source}&8)
+    &7IP: &f{ip}
+    &7绑定: &f{binding}
+    &7生效封禁: &f{ban}
+  player-not-found: "{prefix}&c没有找到玩家或身份记录: &f{player}"
+  ban-usage: "{prefix}&c用法: /carbonguard ban <玩家> [时长] [原因]"
+  unban-usage: "{prefix}&c用法: /carbonguard unban <玩家|#编号>"
+  ban-success: "{prefix}&a已封禁 &f{player}&a，记录 &f#{id}&a，到期 &f{expires}&a。"
+  unban-success: "{prefix}&a已解封 &f{target}&a。"
+  unban-none: "{prefix}&e没有找到生效中的封禁: &f{target}"
+  reload-running: "{prefix}&7正在重载配置与 Web 面板……"
+  reload-success: "{prefix}&a重载完成。Web: &f{web}&a，未绑定拦截: &f{gate}&a。"
+  reload-failed: "{prefix}&c重载失败，请查看控制台日志；旧配置仍在使用。"
+  reload-warning: "{prefix}&e{warning}"
+  operation-failed: "{prefix}&c操作失败，请查看控制台日志。"

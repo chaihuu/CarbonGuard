@@ -1,0 +1,192 @@
+# CarbonGuard
+# Copyright (C) 2026 chaihuu
+# SPDX-License-Identifier: GPL-3.0-only
+
+# ============================================================================
+# CarbonGuard — Paper 26.2 综合管控
+# 包名: xyz.chaihu.carbonguard
+#
+# 重要安全边界（部署前必读）
+# 1. 基岩版真实 IP 不是插件单独能保证的。必须同时开启：
+#    Geyser config.yml:
+#      bedrock:
+#        enable-proxy-protocol: true
+#        proxy-protocol-whitelisted-ips: [ "127.0.0.1", "172.18.0.0/16" ]
+#      remote:
+#        use-proxy-protocol: true
+#    Paper paper-global.yml:
+#      proxies:
+#        proxy-protocol: true
+#
+#    proxy-protocol-whitelisted-ips 是安全边界，不是可选项。只开
+#    enable-proxy-protocol 而不限制来源，任何直连 Geyser 的客户端都能伪造
+#    PROXY header，从而污染真实 IP，使单 IP 限制与 IP 关联封禁失效。
+#    生产环境的白名单至少应包含实际代理的出口 IP/CIDR；空列表表示不限制来源，
+#    不推荐生产使用。
+#
+#    注意：enable-proxy-protocol=true 且白名单非空时，Geyser 会整体关闭 RakNet
+#    包限流，因为它假设上游代理负责抗攻击。这是预期行为，部署时请自行在上游
+#    做 DDoS/连接频率防护。
+#
+# 2. 基岩版身份判定优先使用 Floodgate 的 isFloodgatePlayer；数据建模以 XUID
+#    为主键，Bukkit UUID 仅在 Floodgate 不可用时作为降级键，并标记为
+#    UUID_FALLBACK。安装 Floodgate 后，插件会在启动时用 Geyser 提供的权威
+#    XUID 迁移降级记录（不会从 UUID 反推 XUID）。
+#
+# 3. 共享 IP 误伤：NAT、校园网、公司出口、CGNAT、VPN/代理会让大量合法玩家
+#    共用同一公网 IP。请优先使用 WARN_ONLY / PENDING_REVIEW，并结合
+#    grace-threshold。IP 关联封禁默认 PENDING_REVIEW 而非 REJECT。
+# ============================================================================
+
+config-version: 1
+
+# 打开后会把登录判定细节写入日志。不要长期开启，避免日志膨胀。
+debug: false
+
+# ----------------------------------------------------------------------------
+# 数据层
+# SQLite 使用 HikariCP。login 池服务缓存刷新/写入，web 池服务面板查询，二者
+# 物理隔离，面板慢查询不会拖垮登录链路。所有登录判定只读内存缓存。
+# 修改 sqlite-file 或池大小需要重启服务器。
+# ----------------------------------------------------------------------------
+storage:
+  sqlite-file: "carbonguard.db"
+  pool:
+    # 登录侧连接池上限（缓存刷新、后台写入）
+    login-maximum-pool-size: 4
+    # Web 面板查询专用连接池上限
+    web-maximum-pool-size: 4
+    connection-timeout-ms: 5000
+  # 定时从数据库重建绑定/封禁/IP 关联缓存，单位秒
+  cache-refresh-seconds: 60
+
+# ----------------------------------------------------------------------------
+# 单 IP 账号登录限制
+# hard limit = max-accounts-per-ip + grace-threshold。达到 hard limit 后才执行
+# mode 指定的动作，因此 grace-threshold 可以吸收短暂突发。
+# active 以“在线会话 + 正在登录的预留”计算，避免并发登录绕过。
+# 白名单来源：本模块 whitelist-ips/whitelist-players，以及文件末尾的
+# whitelist 全局白名单。
+# ----------------------------------------------------------------------------
+ip-limit:
+  enable: true
+  max-accounts-per-ip: 3
+  # 允许在 max 之上临时超出的账号数；0 表示严格上限
+  grace-threshold: 1
+  # REJECT: 超出后拒绝登录；WARN_ONLY: 放行并写入待审表
+  mode: REJECT
+  # 支持单 IP 与 CIDR（IPv4/IPv6）。127.0.0.1 已在全局 whitelist 中。
+  whitelist-ips: []
+  # 支持 XUID、带 xuid: 前缀、UUID、带 uuid: 前缀。
+  whitelist-players: []
+
+# ----------------------------------------------------------------------------
+# 封禁
+# ----------------------------------------------------------------------------
+ban:
+  enable: true
+  # 按 XUID/UUID 的直接封禁。直接封禁始终拒绝，不受共享 IP 保护影响。
+  id-uid-xuid:
+    enable: true
+  # 封禁时把该玩家当前 IP 与历史 IP 写入关联表；新登录命中任一关联 IP 时执行 action。
+  ip-association:
+    enable: true
+    # REJECT         直接拒绝登录（NAT 环境风险最高，不推荐作为默认）
+    # PENDING_REVIEW 放行但写入待审表（推荐默认）
+    # LOG_ONLY       仅记录
+    action: PENDING_REVIEW
+    # 关联 IP 的衰减时间（小时）。0 表示永不过期；默认 168 小时 = 7 天。
+    ttl-hours: 168
+
+# ----------------------------------------------------------------------------
+# Web 面板
+# 除绑定验证中携带一次性 token 的公开端点外，全部管理接口都要求 admin-key。
+# admin-key 至少 24 字符、至少 10 种不同字符；强度不足时面板不会启动，
+# 未绑定拦截也会自动降级关闭，避免锁死服务器。
+#
+# 支持在 admin-key 中写 ${ENV:CARBONGUARD_WEB_KEY} 从环境变量读取，避免把密钥写进
+# 配置文件。README 中说明了生成方式。
+# ----------------------------------------------------------------------------
+web:
+  enable: true
+  # 默认只监听回环地址。公网访问必须显式改为 0.0.0.0，并放在 HTTPS 反向代理后。
+  # 若改为 0.0.0.0 而 public-url 留空，踢出消息会展示 127.0.0.1，远程玩家无法访问；
+  # 因此公网部署必须显式填写 public-url。
+  bind-address: "127.0.0.1"
+  port: 8080
+  # 玩家踢出消息里展示的地址；留空时按 bind-address/port 推导。
+  # 公网部署请填写真实外部地址，例如 https://carbonguard.example.com
+  public-url: ""
+  admin-key: ""
+  # 管理接口每 IP 每分钟请求上限（在鉴权之前执行）
+  rate-limit-per-minute: 120
+  # 公开绑定接口每 IP 每分钟请求上限
+  public-rate-limit-per-minute: 12
+  # 仅在可信反向代理之后开启；直连时开启会允许客户端伪造来源 IP。
+  trust-forwarded-for: false
+
+# ----------------------------------------------------------------------------
+# SMTP 邮件验证
+# port 可填 465 或 587，由邮箱服务商决定，绝不硬编码：
+#   - port 465 + enable_ssl: true  -> 隐式 SSL（SMTPS）
+#   - port 587 + enable_ssl: false -> STARTTLS（推荐 QQ 邮箱）
+# QQ 邮箱的 password 是“授权码”，不是 QQ 登录密码。
+# from 留空时会回退到 username；两者至少填一个有效邮箱地址。
+# 修改配置后 /carbonguard reload 即可生效。
+# ----------------------------------------------------------------------------
+smtp:
+  enable: true
+  host: "smtp.qq.com"
+  port: 587
+  username: ""
+  # QQ 邮箱请填写授权码；不要把登录密码写在这里。
+  password: ""
+  from: ""
+  # 465 通常为 true；587 通常为 false 并使用 STARTTLS。
+  enable_ssl: false
+  connection-timeout-ms: 10000
+
+# ----------------------------------------------------------------------------
+# 邮箱验证 / QQ 绑定
+# 验证码默认 10 分钟过期，单次使用；验证成功后立即失效并由数据库事务消费。
+# 绑定链接还包含一次性 Bearer ticket，防止未认证的网页请求任意绑定他人账号。
+# 若 SMTP、Web 或 admin-key 不可用，require-binding 会在启动时自动降级关闭，
+# 避免所有玩家被锁在服务器外。修复配置后执行 /carbonguard reload。
+# ----------------------------------------------------------------------------
+email-verify:
+  enable: true
+  require-binding: true
+  code-ttl-seconds: 600
+  # 玩家收到的绑定链接有效期（秒）
+  ticket-ttl-seconds: 1800
+  # 同一验证码最多尝试次数
+  max-attempts: 5
+  # 同一身份重新发送验证码的最小间隔（秒）
+  request-cooldown-seconds: 60
+  # 仅允许 QQ 邮箱；如果你使用其他邮箱服务商，可设为 false。
+  require-qq-email: true
+  allowed-email-domains: [ "qq.com", "vip.qq.com", "foxmail.com" ]
+
+# ----------------------------------------------------------------------------
+# 统计
+# 登录事件保留天数；统计只用于面板概览，不参与登录判定。
+# ----------------------------------------------------------------------------
+stats:
+  enable: true
+  retention-days: 30
+
+# ----------------------------------------------------------------------------
+# 全局白名单（自动管控的逃生通道）
+# 命中的 IP/玩家会绕过：未绑定拦截、单 IP 限制、IP 关联封禁动作。
+# 直接按 XUID/UUID 的封禁仍然生效，避免白名单意外解除人工封禁。
+# 仅填入你完全信任的本机/管理出口/固定玩家组。
+#
+# 严重警告：如果 Paper/Geyser 位于反向代理之后，而 PROXY protocol 没有正确开启，
+# 插件看到的来源 IP 会是代理地址（常见为 127.0.0.1）。此时把代理地址放进白名单，
+# 等于让所有玩家绕过上述管控。必须先用 /carbonguard status、日志或 Web 统计确认来源 IP
+# 是玩家真实公网 IP，再填写白名单。
+# ----------------------------------------------------------------------------
+whitelist:
+  enable: true
+  ips: [ "127.0.0.1" ]
+  players: []

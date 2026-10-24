@@ -1,0 +1,324 @@
+/*
+ * CarbonGuard
+ * Copyright (C) 2026 chaihuu
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, version 3.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ *
+ * SPDX-FileCopyrightText: 2026 chaihuu
+ * SPDX-License-Identifier: GPL-3.0-only
+ */
+
+package xyz.chaihu.carbonguard.command;
+
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Optional;
+import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.logging.Level;
+import net.kyori.adventure.text.Component;
+import org.bukkit.Bukkit;
+import org.bukkit.OfflinePlayer;
+import org.bukkit.command.Command;
+import org.bukkit.command.CommandSender;
+import org.bukkit.command.TabExecutor;
+import org.bukkit.entity.Player;
+import xyz.chaihu.carbonguard.CarbonGuardPlugin;
+import xyz.chaihu.carbonguard.data.model.BanRecord;
+import xyz.chaihu.carbonguard.data.model.Binding;
+import xyz.chaihu.carbonguard.data.model.PlayerIdentity;
+import xyz.chaihu.carbonguard.util.DurationParser;
+import xyz.chaihu.carbonguard.util.IpUtil;
+import xyz.chaihu.carbonguard.util.TimeUtil;
+
+/** Administrative command surface. All database work is asynchronous. */
+public final class CarbonGuardCommand implements TabExecutor {
+    private static final List<String> SUBCOMMANDS = List.of("help", "status", "ban", "unban", "reload");
+    private final CarbonGuardPlugin plugin;
+
+    public CarbonGuardCommand(CarbonGuardPlugin plugin) {
+        this.plugin = plugin;
+    }
+
+    @Override
+    public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+        if (!sender.hasPermission("carbonguard.admin")) {
+            sender.sendMessage(plugin.messages().component("command.no-permission"));
+            return true;
+        }
+        if (args.length == 0 || args[0].equalsIgnoreCase("help")) {
+            sender.sendMessage(plugin.messages().component("command.help"));
+            return true;
+        }
+        switch (args[0].toLowerCase(Locale.ROOT)) {
+            case "status" -> status(sender, args);
+            case "ban" -> ban(sender, args);
+            case "unban" -> unban(sender, args);
+            case "reload" -> reload(sender);
+            default -> sender.sendMessage(plugin.messages().component("command.help"));
+        }
+        return true;
+    }
+
+    private void status(CommandSender sender, String[] args) {
+        if (args.length < 2) {
+            sender.sendMessage(plugin.messages().component("command.status-server", Map.of(
+                    "integrations", plugin.identityResolver().integrationSummary(),
+                    "web", plugin.webServer() != null && plugin.webServer().isRunning() ? "运行中" : "关闭",
+                    "gate", plugin.bindingGateOperational() ? "开启" : "关闭",
+                    "online", Integer.toString(plugin.data().sessions().onlineCount()),
+                    "bindings", Integer.toString(plugin.data().bindingCache().size()),
+                    "associations", Integer.toString(plugin.data().banCache().associationCount())
+            )));
+            return;
+        }
+        String name = args[1];
+        resolveTarget(name).thenAccept(optional -> {
+            if (optional.isEmpty()) {
+                sync(() -> sender.sendMessage(plugin.messages().component("command.player-not-found",
+                        Map.of("player", name))));
+                return;
+            }
+            PlayerIdentity identity = optional.get();
+            Binding binding = plugin.data().bindingOf(identity.key()).orElse(null);
+            plugin.banService().activeBanFor(identity.key()).whenComplete((activeBan, error) -> {
+                if (error != null) {
+                    plugin.getLogger().log(Level.WARNING, "查询封禁状态失败", error);
+                }
+                String banText = activeBan != null && activeBan.isPresent()
+                        ? "#" + activeBan.get().id() + " " + activeBan.get().reason()
+                        : "无";
+                String bindingText = binding == null ? "未绑定" :
+                        binding.email() + " / QQ " + binding.qq();
+                String ip = plugin.data().sessions().ipOf(identity.uuid()).orElse("-");
+                sync(() -> sender.sendMessage(plugin.messages().component("command.status-player", Map.of(
+                        "player", identity.playerName(),
+                        "identity", identity.displayIdentity(),
+                        "source", identity.source().name(),
+                        "ip", ip,
+                        "binding", bindingText,
+                        "ban", banText
+                ))));
+            });
+        });
+    }
+
+    private void ban(CommandSender sender, String[] args) {
+        if (args.length < 2) {
+            sender.sendMessage(plugin.messages().component("command.ban-usage"));
+            return;
+        }
+        String name = args[1];
+        Duration duration = Duration.ZERO;
+        int reasonIndex = 2;
+        if (args.length >= 3) {
+            Optional<Duration> parsed = DurationParser.parse(args[2]);
+            if (parsed.isPresent()) {
+                duration = parsed.get();
+                reasonIndex = 3;
+            }
+        }
+        String reason = reasonIndex >= args.length ? "未提供原因"
+                : String.join(" ", java.util.Arrays.copyOfRange(args, reasonIndex, args.length));
+        if (reason.length() > 200) {
+            reason = reason.substring(0, 200);
+        }
+        String actor = sender.getName();
+        Player online = Bukkit.getPlayerExact(name);
+        UUID onlineUuid = online == null ? null : online.getUniqueId();
+        String currentIp = online == null || online.getAddress() == null ? null
+                : IpUtil.normalize(online.getAddress().getAddress());
+        final String finalReason = reason;
+        final Duration finalDuration = duration;
+
+        CompletableFuture<BanRecord> banFuture = resolveTarget(name).thenCompose(optional -> {
+            if (optional.isEmpty()) {
+                return CompletableFuture.completedFuture(null);
+            }
+            return plugin.banService().ban(optional.get(), finalReason, finalDuration, actor, currentIp);
+        });
+        banFuture.whenComplete((record, error) -> {
+            if (error != null) {
+                plugin.getLogger().log(Level.WARNING, "执行封禁失败", error);
+                sync(() -> sender.sendMessage(plugin.messages().component("command.operation-failed")));
+                return;
+            }
+            if (record == null) {
+                sync(() -> sender.sendMessage(plugin.messages().component("command.player-not-found",
+                        Map.of("player", name))));
+                return;
+            }
+            sync(() -> {
+                sender.sendMessage(plugin.messages().component("command.ban-success", Map.of(
+                        "player", record.playerName(),
+                        "id", Long.toString(record.id()),
+                        "expires", record.permanent() ? "永久" : TimeUtil.display(record.expiresAt())
+                )));
+                Player target = onlineUuid == null ? null : Bukkit.getPlayer(onlineUuid);
+                if (target != null && target.isOnline()) {
+                    target.kick(plugin.messages().component("kick.banned", Map.of(
+                            "reason", record.reason(),
+                            "expires", record.permanent() ? "永久" : TimeUtil.display(record.expiresAt()),
+                            "banned_by", record.createdBy()
+                    )));
+                }
+            });
+        });
+    }
+
+    private void unban(CommandSender sender, String[] args) {
+        if (args.length < 2) {
+            sender.sendMessage(plugin.messages().component("command.unban-usage"));
+            return;
+        }
+        String target = args[1];
+        if (target.startsWith("#")) {
+            long id;
+            try {
+                id = Long.parseLong(target.substring(1));
+            } catch (NumberFormatException e) {
+                sender.sendMessage(plugin.messages().component("command.unban-usage"));
+                return;
+            }
+            plugin.banService().unban(id, sender.getName()).whenComplete((changed, error) -> {
+                if (error != null) {
+                    plugin.getLogger().log(Level.WARNING, "解封失败", error);
+                    sync(() -> sender.sendMessage(plugin.messages().component("command.operation-failed")));
+                    return;
+                }
+                sync(() -> sender.sendMessage(plugin.messages().component(
+                        Boolean.TRUE.equals(changed) ? "command.unban-success" : "command.unban-none",
+                        Map.of("target", target))));
+            });
+            return;
+        }
+        resolveTarget(target).thenCompose(optional -> optional
+                        .map(identity -> plugin.banService().unbanIdentity(identity.key(), sender.getName()))
+                        .orElseGet(() -> CompletableFuture.completedFuture(-1)))
+                .whenComplete((count, error) -> {
+                    if (error != null) {
+                        plugin.getLogger().log(Level.WARNING, "解封失败", error);
+                        sync(() -> sender.sendMessage(plugin.messages().component("command.operation-failed")));
+                        return;
+                    }
+                    if (count == null || count < 0) {
+                        sync(() -> sender.sendMessage(plugin.messages().component("command.player-not-found",
+                                Map.of("player", target))));
+                        return;
+                    }
+                    sync(() -> sender.sendMessage(plugin.messages().component(
+                            count > 0 ? "command.unban-success" : "command.unban-none",
+                            Map.of("target", target))));
+                });
+    }
+
+    private void reload(CommandSender sender) {
+        sender.sendMessage(plugin.messages().component("command.reload-running"));
+        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+            try {
+                CarbonGuardPlugin.ReloadResult result = plugin.reloadCguard();
+                sync(() -> {
+                    sender.sendMessage(plugin.messages().component("command.reload-success", Map.of(
+                            "web", result.webStarted() ? "运行中" : "关闭",
+                            "gate", result.bindingGateOperational() ? "开启" : "关闭"
+                    )));
+                    for (String warning : result.warnings()) {
+                        sender.sendMessage(plugin.messages().component("command.reload-warning",
+                                Map.of("warning", warning)));
+                    }
+                });
+            } catch (Throwable error) {
+                plugin.getLogger().log(Level.SEVERE, "重载失败", error);
+                sync(() -> sender.sendMessage(plugin.messages().component("command.reload-failed")));
+            }
+        });
+    }
+
+    /**
+     * Online player -> resolver; offline -> database cache first, then resolver for a
+     * cached Bukkit UUID. Never performs a blocking web lookup on the main thread.
+     */
+    private CompletableFuture<Optional<PlayerIdentity>> resolveTarget(String name) {
+        Player online = Bukkit.getPlayerExact(name);
+        if (online != null) {
+            return CompletableFuture.completedFuture(Optional.of(
+                    plugin.identityResolver().resolve(online.getUniqueId(), online.getName())));
+        }
+        OfflinePlayer cached = Bukkit.getOfflinePlayerIfCached(name);
+        UUID uuid = cached == null ? null : cached.getUniqueId();
+        CompletableFuture<Optional<PlayerIdentity>> result = new CompletableFuture<>();
+        Bukkit.getScheduler().runTaskAsynchronously(plugin, () ->
+                plugin.data().database().webAsync(connection -> {
+                    if (uuid != null) {
+                        Optional<PlayerIdentity> byUuid = plugin.data().identities().findByUuid(connection, uuid);
+                        if (byUuid.isPresent()) {
+                            return byUuid;
+                        }
+                    }
+                    return plugin.data().identities().findByPlayerName(connection, name);
+                }).whenComplete((stored, error) -> {
+                    if (error != null) {
+                        result.completeExceptionally(error);
+                        return;
+                    }
+                    if (stored.isPresent()) {
+                        result.complete(stored);
+                        return;
+                    }
+                    if (uuid == null) {
+                        result.complete(Optional.empty());
+                        return;
+                    }
+                    result.complete(Optional.of(plugin.identityResolver().resolve(uuid, name)));
+                }));
+        return result;
+    }
+
+    private void sync(Runnable action) {
+        if (!plugin.isEnabled()) {
+            return;
+        }
+        try {
+            Bukkit.getScheduler().runTask(plugin, action);
+        } catch (Throwable ignored) {
+            // Server is shutting down.
+        }
+    }
+
+    @Override
+    public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
+        if (!sender.hasPermission("carbonguard.admin")) {
+            return List.of();
+        }
+        if (args.length == 1) {
+            return filter(SUBCOMMANDS, args[0]);
+        }
+        if (args.length == 2 && List.of("ban", "unban", "status").contains(args[0].toLowerCase(Locale.ROOT))) {
+            List<String> names = new ArrayList<>();
+            Bukkit.getOnlinePlayers().forEach(player -> names.add(player.getName()));
+            return filter(names, args[1]);
+        }
+        if (args.length == 3 && args[0].equalsIgnoreCase("ban")) {
+            return filter(List.of("1h", "1d", "7d", "30d", "permanent"), args[2]);
+        }
+        return List.of();
+    }
+
+    private static List<String> filter(List<String> source, String prefix) {
+        String lower = prefix.toLowerCase(Locale.ROOT);
+        return source.stream().filter(value -> value.toLowerCase(Locale.ROOT).startsWith(lower)).toList();
+    }
+}
