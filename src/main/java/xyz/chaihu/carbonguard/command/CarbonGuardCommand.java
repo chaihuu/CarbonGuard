@@ -82,7 +82,8 @@ public final class CarbonGuardCommand implements TabExecutor {
                     "gate", plugin.bindingGateOperational() ? "开启" : "关闭",
                     "online", Integer.toString(plugin.data().sessions().onlineCount()),
                     "bindings", Integer.toString(plugin.data().bindingCache().size()),
-                    "associations", Integer.toString(plugin.data().banCache().associationCount())
+                    "associations", Integer.toString(plugin.data().banCache().associationCount()),
+                    "update", plugin.updateService() == null ? "未初始化" : plugin.updateService().status()
             )));
             return;
         }

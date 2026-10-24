@@ -196,6 +196,26 @@ public final class ConfigLoader {
         int reviewAllowHours = clamp(cfg.getInt("review.approval-ttl-hours", 168), 0, 87_600,
                 "review.approval-ttl-hours", warnings);
 
+        boolean bStatsEnable = cfg.getBoolean("bstats.enable", true);
+        int bStatsId = clamp(cfg.getInt("bstats.plugin-id", 0), 0, 1_000_000,
+                "bstats.plugin-id", warnings);
+        if (bStatsEnable && bStatsId <= 0) {
+            warnings.add("bstats.plugin-id 未配置（0）；bStats 匿名统计保持关闭。请先在 bStats 注册插件并填入 id。");
+        }
+
+        boolean updateEnable = cfg.getBoolean("update-check.enable", true);
+        String updateEndpoint = string(cfg, "update-check.endpoint",
+                "https://api.github.com/repos/chaihuu/CarbonGuard/releases/latest").trim();
+        int updateInterval = clamp(cfg.getInt("update-check.interval-minutes", 360), 5, 10_080,
+                "update-check.interval-minutes", warnings);
+        boolean updateDownload = cfg.getBoolean("update-check.download", true);
+        int updateTimeout = clamp(cfg.getInt("update-check.timeout-seconds", 20), 5, 120,
+                "update-check.timeout-seconds", warnings);
+        if (updateEnable && !validHttpsUrl(updateEndpoint)) {
+            warnings.add("update-check.endpoint 必须是合法的 HTTPS URL；自动更新已关闭。");
+            updateEnable = false;
+        }
+
         boolean whitelistEnable = cfg.getBoolean("whitelist.enable", true);
         List<String> whitelistIps = stringList(cfg, "whitelist.ips");
         List<String> whitelistPlayers = stringList(cfg, "whitelist.players");
@@ -238,6 +258,9 @@ public final class ConfigLoader {
                         maxAttempts, cooldown, requireQqEmail, List.copyOf(domains)),
                 new CarbonGuardConfig.Stats(statsEnable, retention),
                 new CarbonGuardConfig.Review(reviewAllowHours),
+                new CarbonGuardConfig.BStats(bStatsEnable, bStatsId),
+                new CarbonGuardConfig.UpdateCheck(updateEnable, updateEndpoint, updateInterval,
+                        updateDownload, updateTimeout),
                 new CarbonGuardConfig.Whitelist(whitelistEnable, List.copyOf(whitelistIps),
                         List.copyOf(whitelistPlayers))
         );
@@ -261,6 +284,15 @@ public final class ConfigLoader {
             URI uri = URI.create(value);
             return ("http".equalsIgnoreCase(uri.getScheme()) || "https".equalsIgnoreCase(uri.getScheme()))
                     && uri.getHost() != null;
+        } catch (RuntimeException e) {
+            return false;
+        }
+    }
+
+    private static boolean validHttpsUrl(String value) {
+        try {
+            URI uri = URI.create(value);
+            return "https".equalsIgnoreCase(uri.getScheme()) && uri.getHost() != null;
         } catch (RuntimeException e) {
             return false;
         }

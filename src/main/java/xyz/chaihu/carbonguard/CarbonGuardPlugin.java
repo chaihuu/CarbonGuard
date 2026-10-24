@@ -21,8 +21,13 @@
 package xyz.chaihu.carbonguard;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.logging.Level;
+import org.bstats.bukkit.Metrics;
+import org.bstats.charts.AdvancedPie;
+import org.bstats.charts.SimplePie;
 import org.bukkit.command.PluginCommand;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
@@ -44,6 +49,7 @@ import xyz.chaihu.carbonguard.service.BanService;
 import xyz.chaihu.carbonguard.service.BindTicketService;
 import xyz.chaihu.carbonguard.service.LoginGate;
 import xyz.chaihu.carbonguard.service.ReviewService;
+import xyz.chaihu.carbonguard.update.UpdateService;
 import xyz.chaihu.carbonguard.util.IpUtil;
 import xyz.chaihu.carbonguard.util.TimeUtil;
 import xyz.chaihu.carbonguard.web.WebServer;
@@ -69,6 +75,8 @@ public final class CarbonGuardPlugin extends JavaPlugin {
     private ReviewService reviewService;
     private volatile AdminService adminService;
     private volatile WebServer webServer;
+    private volatile UpdateService updateService;
+    private volatile Metrics bStats;
     private LoginContexts loginContexts;
     private final List<BukkitTask> tasks = new ArrayList<>();
     private volatile boolean reloading;
@@ -109,6 +117,7 @@ public final class CarbonGuardPlugin extends JavaPlugin {
         this.banService = new BanService(data, this::config);
         this.reviewService = new ReviewService(data, this::config);
         this.adminService = new AdminService(data, config, bindTickets);
+        this.updateService = new UpdateService(this, this::config, getLogger());
         this.loginContexts = new LoginContexts();
         this.loginGate = new LoginGate(data, data.sessions(), accessPolicy, bindTickets,
                 this::messages, this::config, this::bindingGateOperational, this::bindingGateMaintenance);
@@ -125,6 +134,7 @@ public final class CarbonGuardPlugin extends JavaPlugin {
         resumeOnlinePlayers();
         startWeb();
         probeMail();
+        startBStats();
         if (config.emailVerify().enable() && config.emailVerify().requireBinding()
                 && !bindingGateConfigurationComplete()) {
             getLogger().severe("未绑定拦截已开启，但 SMTP/Web/管理密钥/public-url 不完整；"
@@ -180,6 +190,63 @@ public final class CarbonGuardPlugin extends JavaPlugin {
             return null;
         }
         return server;
+    }
+
+    /**
+     * Starts the optional bStats client. Charts contain only configuration/module
+     * state; no player names, IPs, emails or secrets are submitted.
+     */
+    private void startBStats() {
+        CarbonGuardConfig current = config;
+        if (current == null || !current.bstats().enable() || current.bstats().pluginId() <= 0) {
+            if (current != null && current.bstats().enable()) {
+                getLogger().info("bStats 未启用：请在 bStats 注册插件并填写 bstats.plugin-id。");
+            }
+            return;
+        }
+        if (bStats != null) {
+            return;
+        }
+        try {
+            Metrics metrics = new Metrics(this, current.bstats().pluginId());
+            metrics.addCustomChart(new SimplePie("ip_limit_mode",
+                    () -> config.ipLimit().mode().name()));
+            metrics.addCustomChart(new SimplePie("ip_association_action",
+                    () -> config.ban().ipAssociation().action().name()));
+            metrics.addCustomChart(new SimplePie("identity_backend", () -> {
+                if (identityResolver.floodgatePresent()) {
+                    return "floodgate";
+                }
+                return identityResolver.geyserPresent() ? "geyser" : "java";
+            }));
+            metrics.addCustomChart(new SimplePie("binding_gate",
+                    () -> bindingGateOperational() ? "enabled" : "disabled"));
+            metrics.addCustomChart(new SimplePie("web_enabled",
+                    () -> config.web().enable() ? "enabled" : "disabled"));
+            metrics.addCustomChart(new AdvancedPie("enabled_modules", () -> {
+                Map<String, Integer> values = new HashMap<>();
+                if (config.ipLimit().enable()) {
+                    values.put("ip_limit", 1);
+                }
+                if (config.ban().enable()) {
+                    values.put("ban", 1);
+                }
+                if (config.ban().ipAssociation().enable()) {
+                    values.put("ip_association", 1);
+                }
+                if (config.emailVerify().enable()) {
+                    values.put("email_verify", 1);
+                }
+                if (config.web().enable()) {
+                    values.put("web", 1);
+                }
+                return values;
+            }));
+            bStats = metrics;
+            getLogger().info("bStats 匿名统计已启用（plugin-id=" + current.bstats().pluginId() + "）。");
+        } catch (Throwable error) {
+            getLogger().log(Level.WARNING, "bStats 初始化失败，匿名统计关闭", error);
+        }
     }
 
     public boolean bindingGateOperational() {
@@ -260,6 +327,18 @@ public final class CarbonGuardPlugin extends JavaPlugin {
                 data.database().write(connection -> data.stats().purge(connection, TimeUtil.now(), days));
             }, 6L * 60L * 60L * 20L, 6L * 60L * 60L * 20L));
         }
+
+        if (config.updateCheck().enable()) {
+            long minutes = Math.max(5, config.updateCheck().intervalMinutes());
+            long period = minutes * 60L * 20L;
+            tasks.add(getServer().getScheduler().runTaskTimerAsynchronously(this, () -> {
+                UpdateService service = updateService;
+                if (service != null) {
+                    // checkNow performs HTTP + file I/O only on this async timer thread.
+                    service.checkNow();
+                }
+            }, 60L * 20L, period));
+        }
     }
 
     private synchronized void cancelTasks() {
@@ -292,6 +371,10 @@ public final class CarbonGuardPlugin extends JavaPlugin {
         if (previous.storage().pool().loginMaximumSize() != next.storage().pool().loginMaximumSize()
                 || previous.storage().pool().webMaximumSize() != next.storage().pool().webMaximumSize()) {
             warnings.add("连接池大小变更需要重启服务器才会生效。");
+        }
+        if (bStats != null && (previous.bstats().enable() != next.bstats().enable()
+                || previous.bstats().pluginId() != next.bstats().pluginId())) {
+            warnings.add("bstats.enable/plugin-id 变更需要重启服务器才会生效。");
         }
 
         Messages nextMessages = Messages.load(this);
@@ -337,6 +420,7 @@ public final class CarbonGuardPlugin extends JavaPlugin {
         }
 
         probeMail();
+        startBStats();
         try {
             data.refreshCaches();
         } catch (Exception e) {
@@ -465,6 +549,10 @@ public final class CarbonGuardPlugin extends JavaPlugin {
 
     public WebServer webServer() {
         return webServer;
+    }
+
+    public UpdateService updateService() {
+        return updateService;
     }
 
     public LoginContexts loginContexts() {

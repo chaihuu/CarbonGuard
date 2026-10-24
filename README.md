@@ -8,7 +8,7 @@ Paper 26.2 综合管控插件：基岩版真实 IP 接入、XUID 身份、单 IP
 - Java 包名：`xyz.chaihu.carbonguard`
 - 主类：`xyz.chaihu.carbonguard.CarbonGuardPlugin`
 - 目标平台：Paper 26.2（Adventure 5.2）
-- 构建产物：`build/libs/CarbonGuard-1.1.0.jar`
+- 构建产物：`build/libs/CarbonGuard-1.2.0.jar`
 - 源码仓库：https://github.com/chaihuu/CarbonGuard
 - 许可证：GPL-3.0-only，完整文本见 [LICENSE](LICENSE)
 
@@ -25,6 +25,8 @@ Paper 26.2 综合管控插件：基岩版真实 IP 接入、XUID 身份、单 IP
 | Web 面板 | 绑定验证、绑定管理/解绑、封禁查询、统计概览；管理密钥 + 每 IP 限速 + 安全响应头 |
 | 复核 | 通过后按 (类型, 身份, IP) 抑制重复待审，可配置有效期 |
 | 网络粒度 | IPv4 精确匹配；IPv6 默认按 /64 聚合，避免隐私地址轮换绕过限制 |
+| 匿名统计 | 可选 bStats，上报聚合模块状态，不上报玩家/IP/邮箱/密钥 |
+| 自动更新 | 异步检查 GitHub Releases，下载 jar 到 `plugins/update/`，重启后生效 |
 | 数据层 | SQLite + HikariCP，双连接池隔离登录侧与 Web 查询；登录判定只读预热缓存 |
 
 ## 2. 安全边界（请先读）
@@ -79,7 +81,7 @@ proxies:
 ## 3. 快速开始
 
 1. 安装 Paper 26.2，Java 25。
-2. 把 `CarbonGuard-1.1.0.jar` 放入 `plugins/`。
+2. 把 `CarbonGuard-1.2.0.jar` 放入 `plugins/`。
 3. 启动一次服务器，生成 `plugins/CarbonGuard/config.yml` 与 `messages.yml`。
 4. 设置强管理密钥：
 
@@ -128,7 +130,20 @@ proxies:
      public-url: "https://carbonguard.example.com"
    ```
 
-7. 执行 `/carbonguard reload` 或重启服务器。
+7. 可选：配置 bStats 与自动更新：
+
+   ```yaml
+   bstats:
+     enable: true
+     plugin-id: 0          # 在 bStats 注册后填写；0 = 关闭
+   update-check:
+     enable: true
+     endpoint: "https://api.github.com/repos/chaihuu/CarbonGuard/releases/latest"
+     interval-minutes: 360
+     download: true        # 下载到 plugins/update/，重启后生效
+   ```
+
+8. 执行 `/carbonguard reload` 或重启服务器。
 
 首次默认配置中 `web.admin-key` 为空、SMTP 未填完整，因此 Web 面板不会启动，未绑定拦截会自动降级关闭。这是刻意的安全行为，不会把服务器锁死。
 
@@ -324,7 +339,7 @@ Windows：
 ./gradlew test
 ```
 
-当前测试覆盖 CIDR（含负前缀/端口拒绝）、令牌/PBKDF2、时长解析、SQLite schema/事务/唯一约束、封禁与 IP 关联缓存、UUID_FALLBACK → XUID 迁移（含目标已存在）、身份 source 不降级、IPv6 /64 聚合、复核放行抑制、解绑、会话生命周期与 IPv6 计数。
+当前测试覆盖 CIDR（含负前缀/端口拒绝）、令牌/PBKDF2、时长解析、SQLite schema/事务/唯一约束、封禁与 IP 关联缓存、UUID_FALLBACK → XUID 迁移（含目标已存在）、身份 source 不降级、IPv6 /64 聚合、复核放行抑制、解绑、会话生命周期与 IPv6 计数、自动更新版本解析。
 
 ## 11. 目录
 
@@ -338,6 +353,7 @@ src/main/java/xyz/chaihu/carbonguard/
   listener/      # 异步登录、会话生命周期
   mail/          # Jakarta Mail，SMTP SSL/STARTTLS
   service/       # 登录门禁、绑定、封禁、复核、统计
+  update/        # GitHub Releases 版本解析与异步下载
   util/          # CIDR、Token、时长、IP
   web/           # JDK HttpServer、JSON API、静态资源
 src/main/resources/
@@ -356,10 +372,45 @@ src/main/resources/
 - IPv6 默认按 /64 聚合计入单 IP 限制、IP 关联和 Web 限速；如需更粗/更细粒度，应修改 `IpUtil.networkKey` 并在测试中覆盖。
 - 复核“通过”会抑制同一 (类型, 身份, IP) 的重复待审；不会自动放行封禁，也不会修改单 IP 上限。
 - 登录判定现在 fail-closed：内部异常会拒绝本次登录，而不是放行。
+- bStats 需要先在 bStats 注册插件并填写 `bstats.plugin-id`；`0` 表示关闭。修改 id 需要重启。
+- 自动更新只接受 HTTPS endpoint/资产，下载在异步线程完成并写入 `plugins/update/`；不会自动重启服务器。
 - 单节点 SQLite；多节点需要外部数据库扩展。
 - 插件不提供 TLS 终止；公网必须使用 HTTPS 反向代理。
 
-## 13. 许可证
+## 13. bStats 与自动更新
+
+### 13.1 bStats
+
+bStats 只收集插件/服务端版本、配置模块开关等聚合信息，不包含玩家名、IP、邮箱、密钥或聊天内容。先在 <https://bstats.org/> 注册 CarbonGuard，把分配的 `plugin-id` 写入：
+
+```yaml
+bstats:
+  enable: true
+  plugin-id: 12345
+```
+
+`plugin-id: 0` 时客户端不启动。运行 `/carbonguard status` 可在启动日志中看到 bStats 是否启用。
+
+### 13.2 自动更新
+
+默认每 6 小时在**异步线程**请求 GitHub Releases：
+
+```yaml
+update-check:
+  enable: true
+  endpoint: "https://api.github.com/repos/chaihuu/CarbonGuard/releases/latest"
+  interval-minutes: 360
+  download: true
+  timeout-seconds: 20
+```
+
+- 只接受 HTTPS endpoint 和 HTTPS 下载地址；
+- 只下载 release 中的 `.jar` 资产，校验 `PK` 头并限制大小；
+- 写入 Paper 的 `plugins/update/CarbonGuard-<version>.jar`，重启服务器后由 Paper 更新机制应用；
+- 下载失败/检查失败只记录日志和 `/carbonguard status` 状态，不影响登录；
+- 不会在主线程执行网络或文件下载。
+
+## 14. 许可证
 
 Copyright (C) 2026 chaihuu。
 
@@ -372,7 +423,7 @@ License 第 3 版**（仅第 3 版，`GPL-3.0-only`）重新分发和/或修改�
 - 完整许可证：[LICENSE](LICENSE)
 - 许可证指针：[COPYING](COPYING)
 - 第三方组件与许可证：[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
-- Apache-2.0 / EPL-2.0 全文：[LICENSES/](LICENSES/)
+- Apache-2.0 / EPL-2.0 / MIT 全文：[LICENSES/](LICENSES/)
 - 每个 Java 源文件都带有 `SPDX-License-Identifier: GPL-3.0-only` 头，构建时由
   `verifyLicenseHeaders` 强制检查。
 - 发布的 jar 中包含 `LICENSE`、`COPYING`、`THIRD_PARTY_NOTICES.md` 与

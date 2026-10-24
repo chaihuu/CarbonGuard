@@ -277,6 +277,8 @@ public final class ApiHandler implements HttpHandler {
         modules.addProperty("smtpOperational", plugin.mailService() != null
                 && plugin.mailService().operational());
         modules.addProperty("web", plugin.webServer() != null && plugin.webServer().isRunning());
+        modules.addProperty("bstats", config.bstats().enable() && config.bstats().pluginId() > 0);
+        modules.addProperty("updateCheck", config.updateCheck().enable());
         modules.addProperty("floodgate", plugin.identityResolver().floodgatePresent());
         modules.addProperty("geyser", plugin.identityResolver().geyserPresent());
         body.add("modules", modules);

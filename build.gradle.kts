@@ -1,4 +1,4 @@
-/*
+﻿/*
  * CarbonGuard
  * Copyright (C) 2026 chaihuu
  *
@@ -24,10 +24,13 @@ plugins {
 }
 
 group = "xyz.chaihu"
-version = "1.1.0"
+version = "1.2.0"
 description = "CarbonGuard - Paper 26.2 access control with GPL-3.0-only licensing"
 
 repositories {
+    // Vendored bStats artifacts (MIT) keep builds reproducible without adding
+    // another public repository dependency. See THIRD_PARTY_NOTICES.md.
+    maven { url = uri("libs/bstats-repo") }
     mavenCentral()
     maven("https://repo.papermc.io/repository/maven-public/")
     maven("https://repo.opencollab.dev/maven-releases/") {
@@ -70,9 +73,12 @@ dependencies {
         exclude(group = "org.slf4j", module = "slf4j-api")
     }
     implementation("com.sun.mail:jakarta.mail:2.0.2")
+    // Anonymous metrics. Relocated below so it cannot clash with another plugin's copy.
+    implementation("org.bstats:bstats-bukkit:2.2.1")
 
     testImplementation(platform("org.junit:junit-bom:6.1.3"))
     testImplementation("org.junit.jupiter:junit-jupiter")
+    testImplementation("com.google.code.gson:gson:2.14.0")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
     // Only needed because the shaded plugin intentionally excludes Paper's SLF4J.
     testRuntimeOnly("org.slf4j:slf4j-api:2.0.17")
@@ -140,6 +146,7 @@ tasks.shadowJar {
     archiveClassifier = ""
     duplicatesStrategy = DuplicatesStrategy.INCLUDE
     mergeServiceFiles()
+    relocate("org.bstats", "xyz.chaihu.carbonguard.libs.bstats")
     exclude("META-INF/*.SF", "META-INF/*.DSA", "META-INF/*.RSA")
     // Dependency license texts are shipped explicitly via LICENSE / LICENSES.
     exclude("META-INF/LICENSE*", "META-INF/NOTICE*")

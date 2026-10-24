@@ -36,7 +36,7 @@ Windows PowerShell：
 产物：
 
 ```text
-build/libs/CarbonGuard-1.1.0.jar
+build/libs/CarbonGuard-1.2.0.jar
 ```
 
 这是一个包含运行时依赖的 shaded jar，直接放入 Paper 的 `plugins/` 即可。不要把 `-sources`、`-javadoc` 或其他 classifier 当成插件 jar。
@@ -67,13 +67,15 @@ build/libs/CarbonGuard-1.1.0.jar
 | `com.zaxxer:HikariCP` | `7.1.0` | `implementation` | 是 |
 | `org.xerial:sqlite-jdbc` | `3.53.4.0` | `implementation` | 是 |
 | `com.sun.mail:jakarta.mail` | `2.0.2` | `implementation` | 是 |
+| `org.bstats:bstats-bukkit` | `2.2.1` | `implementation` | 是（重定位到 `xyz.chaihu.carbonguard.libs.bstats`） |
 | JUnit Jupiter | `6.1.3` | `testImplementation` | 否 |
 
 说明：
 
 - Paper 26.2 已包含 Adventure 5.2、Gson 和 SLF4J 2.x，插件不重复打包这些 API。HikariCP/SQLite 的 `slf4j-api` 传递依赖已显式排除。
 - Floodgate/Geyser 是软依赖：`plugin.yml` 中声明 `softdepend: [floodgate, Geyser-Spigot, Geyser]`，入口通过类存在性检查隔离，未安装时不会出现 `NoClassDefFoundError`。
-- HikariCP、SQLite JDBC、Jakarta Mail 被打进最终 jar。没有做 package relocation，因为 Paper 插件类加载器隔离；如果你在同一服务器上使用了自行打包同名类且发生冲突，可在 Shadow 配置中加入 `relocate`，但重定位 SQLite 时必须同时验证 JNI 原生库路径。
+- HikariCP、SQLite JDBC、Jakarta Mail、bStats 被打进最终 jar。bStats 在 Shadow 中重定位到 `xyz.chaihu.carbonguard.libs.bstats`，避免与其他插件冲突；其余依赖没有 relocation，因为 Paper 插件类加载器隔离。
+- bStats 2.2.1 的 MIT jar/POM 存放在 `libs/bstats-repo` 本地 Maven 仓库，构建无需额外公共仓库；许可证见 `LICENSES/MIT-bStats.txt`。
 - Shadow 使用 `mergeServiceFiles()` 以保留 `java.sql.Driver` 与 `jakarta.mail.Provider` 服务文件。`duplicatesStrategy = INCLUDE` 避免 ServiceFileTransformer 前被去重。
 
 ### 3.1 关于 SNAPSHOT 依赖
@@ -131,7 +133,7 @@ storage:
 # 准备一个 Paper 26.2 测试服
 java -Xms512M -Xmx1G -jar paper-26.2-134.jar --nogui
 
-# 把 build/libs/CarbonGuard-1.1.0.jar 放入 plugins/
+# 把 build/libs/CarbonGuard-1.2.0.jar 放入 plugins/
 ```
 
 期望日志：
@@ -206,6 +208,7 @@ COPYING                    # GPL 指针
 THIRD_PARTY_NOTICES.md     # 捆绑依赖与运行时依赖说明
 LICENSES/Apache-2.0.txt    # HikariCP / SQLite JDBC
 LICENSES/EPL-2.0.txt       # Jakarta Mail / Activation
+LICENSES/MIT-bStats.txt    # bStats Metrics
 ```
 
 每个 Java 源文件必须以 SPDX 头开始：
@@ -236,7 +239,7 @@ LICENSES/EPL-2.0.txt       # Jakarta Mail / Activation
 
 - [ ] `./gradlew clean build` 成功
 - [ ] `./gradlew verifyLicenseHeaders` 成功
-- [ ] `build/libs/CarbonGuard-1.1.0.jar` 中包含 `plugin.yml`、`config.yml`、`messages.yml`、`web/*`
+- [ ] `build/libs/CarbonGuard-1.2.0.jar` 中包含 `plugin.yml`、`config.yml`、`messages.yml`、`web/*`
 - [ ] jar 中包含 `LICENSE`、`COPYING`、`THIRD_PARTY_NOTICES.md`、`LICENSES/*`
 - [ ] 在 Paper 26.2 + Java 25 上启动无 `NoClassDefFoundError`
 - [ ] `web.admin-key` 为强随机值，或来自环境变量

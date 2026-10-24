@@ -47,6 +47,10 @@ public final class TestConfig {
                         true, List.of("qq.com", "vip.qq.com", "foxmail.com")),
                 new CarbonGuardConfig.Stats(true, 30),
                 new CarbonGuardConfig.Review(168),
+                new CarbonGuardConfig.BStats(false, 0),
+                new CarbonGuardConfig.UpdateCheck(false,
+                        "https://api.github.com/repos/chaihuu/CarbonGuard/releases/latest",
+                        360, false, 20),
                 new CarbonGuardConfig.Whitelist(true, List.of("127.0.0.1"), List.of())
         );
     }

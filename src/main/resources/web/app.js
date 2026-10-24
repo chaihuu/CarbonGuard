@@ -432,6 +432,8 @@ function renderStats(data) {
     ['ban', '封禁模块', modules.ipAssociationAction ? `关联动作 ${modules.ipAssociationAction}` : ''],
     ['bindingGateOperational', '未绑定拦截', modules.requireBinding ? '已启用 require-binding' : '未要求绑定'],
     ['smtpOperational', 'SMTP', '连接/认证可用'],
+    ['bstats', 'bStats', '匿名统计'],
+    ['updateCheck', '自动更新', '异步检查 GitHub Releases'],
     ['floodgate', 'Floodgate', 'XUID 主键'],
     ['geyser', 'Geyser', '基岩版检测 / 真实 IP 依赖代理协议'],
     ['web', 'Web 面板', '管理密钥 + 速率限制']

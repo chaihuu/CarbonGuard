@@ -43,6 +43,8 @@ public record CarbonGuardConfig(
         EmailVerify emailVerify,
         Stats stats,
         Review review,
+        BStats bstats,
+        UpdateCheck updateCheck,
         Whitelist whitelist
 ) {
     public record Storage(Path sqliteFile, Pool pool) {
@@ -189,6 +191,15 @@ public record CarbonGuardConfig(
      * same (type, identity, ip) tuple for this many hours; 0 disables suppression.
      */
     public record Review(int approvalTtlHours) {
+    }
+
+    /** bStats is opt-in per plugin id; 0 disables the anonymous metrics client. */
+    public record BStats(boolean enable, int pluginId) {
+    }
+
+    /** Automatic update check/download. Downloads must stay off the server main thread. */
+    public record UpdateCheck(boolean enable, String endpoint, int intervalMinutes,
+                              boolean download, int timeoutSeconds) {
     }
 
     public record Whitelist(boolean enable, List<String> ips, List<String> players) {

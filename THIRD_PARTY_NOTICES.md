@@ -2,7 +2,7 @@
 
 CarbonGuard itself is licensed under **GPL-3.0-only**. See [LICENSE](LICENSE).
 
-The following components are included in the shaded `CarbonGuard-1.1.0.jar`.
+The following components are included in the shaded `CarbonGuard-1.2.0.jar`.
 They remain under their respective licenses; nothing in the CarbonGuard license
 overrides those terms.
 
@@ -12,13 +12,16 @@ overrides those terms.
 | SQLite JDBC | 3.53.4.0 | Apache License 2.0 | https://github.com/xerial/sqlite-jdbc |
 | Jakarta Mail | 2.0.2 | EPL-2.0 OR GPL-2.0-only with Classpath Exception | https://github.com/eclipse-ee4j/mail |
 | Jakarta Activation | 2.0.1 | EPL-2.0 OR GPL-2.0-only with Classpath Exception | https://github.com/eclipse-ee4j/jaf |
+| bStats Metrics | 2.2.1 | MIT | https://github.com/Bastian/bStats-Metrics |
 
 The Apache License 2.0 text is included at [LICENSES/Apache-2.0.txt](LICENSES/Apache-2.0.txt).
 The Eclipse Public License 2.0 text is included at [LICENSES/EPL-2.0.txt](LICENSES/EPL-2.0.txt).
+The bStats MIT text is included at [LICENSES/MIT-bStats.txt](LICENSES/MIT-bStats.txt).
 The GNU GPL v3 text is included at [LICENSE](LICENSE).
 
 Jakarta Mail and Jakarta Activation are used under the EPL-2.0 option; the EPL-2.0
 text is therefore included. HikariCP and SQLite JDBC are used under Apache-2.0.
+bStats Metrics is used under MIT.
 
 ## Runtime-provided components (not bundled)
 
