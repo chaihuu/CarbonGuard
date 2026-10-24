@@ -55,6 +55,7 @@ command:
     &7集成: &f{integrations}
     &7Web: &f{web} &7| 入服拦截: &f{gate}
     &7在线会话: &f{online} &7| 已绑定: &f{bindings} &7| IP 关联: &f{associations}
+    &7管理密钥: &f{adminkey}
     &7自动更新: &f{update}
   status-player: |-
     {prefix}&b玩家状态: &f{player}

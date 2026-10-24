@@ -87,7 +87,9 @@ proxies:
 1. 安装 Paper 26.2，Java 25。
 2. 把 `CarbonGuard-1.2.0.jar` 放入 `plugins/`。
 3. 启动一次服务器，生成 `plugins/CarbonGuard/config.yml` 与 `messages.yml`。
-4. 设置强管理密钥：
+4. 管理密钥：**`web.admin-key` 留空即可**。首次启动会从安全随机源生成 64 字符密钥、写入 `config.yml`，并在启动日志打印一次；`/carbonguard status` 也会显示“自动生成”的密钥（仅对 `carbonguard.admin` 可见）。日志中的密钥请立即保存。
+
+   如果希望密钥不落盘，也可以自行生成并写入 `web.admin-key`，或用环境变量：
 
    Linux/macOS：
 
@@ -103,12 +105,12 @@ proxies:
    [Convert]::ToBase64String($b)
    ```
 
-   将结果写入 `web.admin-key`，或使用环境变量：
-
    ```yaml
    web:
      admin-key: "${ENV:CARBONGUARD_WEB_KEY}"
    ```
+
+   注意：一旦 `config.yml` 中已有非空 `admin-key`，插件不会再生成新密钥；修改后需要 `/carbonguard reload` 或重启生效。
 
 5. 配置 QQ 邮箱 SMTP。QQ 邮箱必须填**授权码**，不是 QQ 登录密码：
 
@@ -133,6 +135,8 @@ proxies:
      port: 8080
      public-url: "https://carbonguard.example.com"
    ```
+
+   修改 `config.yml` 后执行 `/carbonguard reload`；`/carbonguard status` 会显示管理密钥来源（自动生成/已配置）和入服拦截状态。
 
 7. 可选：配置 bStats 与自动更新：
 

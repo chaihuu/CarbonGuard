@@ -34,6 +34,7 @@ import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.configuration.file.YamlConfiguration;
 import xyz.chaihu.carbonguard.util.CidrMatcher;
 import xyz.chaihu.carbonguard.util.IpUtil;
+import xyz.chaihu.carbonguard.util.Tokens;
 
 /** Reads {@code config.yml} into the immutable {@link CarbonGuardConfig}. */
 public final class ConfigLoader {
@@ -47,10 +48,14 @@ public final class ConfigLoader {
         }
         YamlConfiguration yaml = new YamlConfiguration();
         yaml.load(configFile.toFile());
-        return load(yaml, dataFolder);
+        return load(yaml, dataFolder, configFile);
     }
 
     public static LoadResult load(FileConfiguration cfg, Path dataFolder) {
+        return load(cfg, dataFolder, null);
+    }
+
+    private static LoadResult load(FileConfiguration cfg, Path dataFolder, Path configFile) {
         List<String> warnings = new ArrayList<>();
 
         int version = clamp(cfg.getInt("config-version", 1), 1, 1, "config-version", warnings);
@@ -113,7 +118,16 @@ public final class ConfigLoader {
             warnings.add("web.bind-address 不是回环或通配地址；请确认防火墙与反向代理已正确配置。");
         }
         int webPort = clamp(cfg.getInt("web.port", 8_080), 1, 65_535, "web.port", warnings);
-        String adminKey = expandSecret(string(cfg, "web.admin-key", ""));
+        String rawAdminKey = string(cfg, "web.admin-key", "");
+        String adminKey = expandSecret(rawAdminKey);
+        boolean adminKeyGenerated = false;
+        if (webEnable && adminKey.isBlank()) {
+            if (isEnvReference(rawAdminKey)) {
+                warnings.add(rawAdminKey + " 对应的环境变量为空；已自动生成随机管理密钥。");
+            }
+            adminKey = autoGenerateAdminKey(configFile, warnings);
+            adminKeyGenerated = true;
+        }
         String publicUrl = string(cfg, "web.public-url", "");
         if (publicUrl.isBlank()) {
             publicUrl = "http://" + IpUtil.displayHost(bindAddress) + ":" + webPort;
@@ -231,7 +245,7 @@ public final class ConfigLoader {
             warnings.add("SMTP username 已配置但 password/授权码为空；邮件验证不可用，入服拦截会自动降级关闭。");
         }
         CarbonGuardConfig.Web webConfig = new CarbonGuardConfig.Web(webEnable, bindAddress, webPort,
-                publicUrl, adminKey.trim(), webRate, publicRate, trustXff);
+                publicUrl, adminKey.trim(), webRate, publicRate, trustXff, adminKeyGenerated);
         if (requireBinding && webEnable && webConfig.hasUsableAdminKey()
                 && !webConfig.hasReachablePublicUrl()) {
             warnings.add("web.public-url 为空或指向回环/通配地址；远程未绑定玩家无法打开绑定链接，"
@@ -336,6 +350,51 @@ public final class ConfigLoader {
             return resolved == null ? "" : resolved;
         }
         return value;
+    }
+
+    private static boolean isEnvReference(String value) {
+        if (value == null) {
+            return false;
+        }
+        String trimmed = value.trim();
+        return trimmed.startsWith("${ENV:") && trimmed.endsWith("}");
+    }
+
+    /**
+     * Generates a strong random admin key (64 URL-safe characters from 48 random
+     * bytes) and best-effort persists it to {@code config.yml} so it survives
+     * reloads. Never throws: an unreadable config must not block startup.
+     */
+    public static void persistAdminKey(Path configFile, String adminKey) throws IOException {
+        YamlConfiguration persisted = new YamlConfiguration();
+        if (Files.exists(configFile)) {
+            try {
+                persisted.load(configFile.toFile());
+            } catch (InvalidConfigurationException e) {
+                throw new IOException("配置文件无法解析，未写入管理密钥: " + e.getMessage(), e);
+            }
+        }
+        persisted.set("web.admin-key", adminKey);
+        persisted.save(configFile.toFile());
+    }
+
+    private static String autoGenerateAdminKey(Path configFile, List<String> warnings) {
+        String generated = Tokens.random(48);
+        if (configFile == null) {
+            warnings.add("web.admin-key 为空，已自动生成随机管理密钥（仅本次运行有效；"
+                    + "未提供配置文件路径）。");
+            return generated;
+        }
+        try {
+            persistAdminKey(configFile, generated);
+            warnings.add("web.admin-key 为空，已自动生成随机管理密钥并写入 "
+                    + configFile.getFileName() + "；启动日志会打印该密钥一次，请立即保存并以最小权限保护文件。");
+        } catch (RuntimeException | IOException e) {
+            warnings.add("web.admin-key 为空，已自动生成随机管理密钥，但无法写入 "
+                    + configFile.getFileName() + "（" + e.getMessage()
+                    + "）；本次运行内置该密钥，重启后会重新生成。");
+        }
+        return generated;
     }
 
     private static String string(FileConfiguration cfg, String path, String fallback) {
