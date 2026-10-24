@@ -197,6 +197,10 @@ public final class ApiHandler implements HttpHandler {
             unbindBinding(exchange);
             return;
         }
+        if (path.equals("/api/admin/players")) {
+            players(exchange);
+            return;
+        }
         Matcher review = REVIEW_PATH.matcher(path);
         if (review.matches()) {
             decideReview(exchange, Long.parseLong(review.group(1)));
@@ -387,7 +391,47 @@ public final class ApiHandler implements HttpHandler {
         });
     }
 
-    private void reviews(HttpExchange exchange) {        if (!requireMethod(exchange, "GET")) {
+    private void players(HttpExchange exchange) {
+        if (!requireMethod(exchange, "GET")) {
+            return;
+        }
+        Map<String, String> query = HttpSupport.query(exchange);
+        String q = query.getOrDefault("q", "");
+        int limit = intParam(query.get("limit"), 50, 1, 100);
+        plugin.playerService().search(q, limit).whenComplete((profiles, error) -> {
+            if (error != null) {
+                fail(exchange, error);
+                return;
+            }
+            JsonObject body = new JsonObject();
+            JsonArray array = new JsonArray();
+            for (xyz.chaihu.carbonguard.data.model.PlayerProfileView profile : profiles) {
+                array.add(playerJson(profile));
+            }
+            body.add("players", array);
+            body.addProperty("count", array.size());
+            HttpSupport.ok(exchange, body);
+        });
+    }
+
+    private JsonObject playerJson(xyz.chaihu.carbonguard.data.model.PlayerProfileView profile) {
+        JsonObject item = new JsonObject();
+        item.addProperty("identity", profile.identityKey());
+        item.addProperty("player", profile.playerName());
+        item.addProperty("source", profile.identitySource());
+        item.addProperty("firstJoin", profile.firstJoin());
+        item.addProperty("boundAt", profile.boundAt());
+        item.addProperty("email", profile.email());
+        item.addProperty("lastLogin", profile.lastLogin());
+        item.addProperty("lastSeen", profile.lastSeen());
+        item.addProperty("loginCount", profile.loginCount());
+        item.addProperty("playSeconds", profile.playSeconds());
+        item.addProperty("lastIp", profile.lastIp());
+        return item;
+    }
+
+    private void reviews(HttpExchange exchange) {
+        if (!requireMethod(exchange, "GET")) {
             return;
         }
         Map<String, String> query = HttpSupport.query(exchange);

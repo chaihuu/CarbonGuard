@@ -63,6 +63,7 @@ command:
     &7IP: &f{ip}
     &7绑定: &f{binding}
     &7生效封禁: &f{ban}
+    &7数据: &f{profile}
   player-not-found: "{prefix}&c没有找到玩家或身份记录: &f{player}"
   ban-usage: "{prefix}&c用法: /carbonguard ban <玩家> [时长] [原因]"
   unban-usage: "{prefix}&c用法: /carbonguard unban <玩家|#编号>"

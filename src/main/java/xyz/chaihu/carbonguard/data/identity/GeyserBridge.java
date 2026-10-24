@@ -57,4 +57,13 @@ final class GeyserBridge {
             return null;
         }
     }
+
+    static boolean online(UUID uuid) {
+        try {
+            GeyserApi api = GeyserApi.api();
+            return api != null && api.connectionByUuid(uuid) != null;
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
 }

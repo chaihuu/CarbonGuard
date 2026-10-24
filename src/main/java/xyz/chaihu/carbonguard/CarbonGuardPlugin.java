@@ -48,6 +48,7 @@ import xyz.chaihu.carbonguard.service.AuthService;
 import xyz.chaihu.carbonguard.service.BanService;
 import xyz.chaihu.carbonguard.service.BindTicketService;
 import xyz.chaihu.carbonguard.service.LoginGate;
+import xyz.chaihu.carbonguard.service.PlayerService;
 import xyz.chaihu.carbonguard.service.ReviewService;
 import xyz.chaihu.carbonguard.update.UpdateService;
 import xyz.chaihu.carbonguard.util.IpUtil;
@@ -74,6 +75,7 @@ public final class CarbonGuardPlugin extends JavaPlugin {
     private BanService banService;
     private ReviewService reviewService;
     private volatile AdminService adminService;
+    private volatile PlayerService playerService;
     private volatile WebServer webServer;
     private volatile UpdateService updateService;
     private volatile Metrics bStats;
@@ -118,10 +120,12 @@ public final class CarbonGuardPlugin extends JavaPlugin {
         this.banService = new BanService(data, this::config);
         this.reviewService = new ReviewService(data, this::config);
         this.adminService = new AdminService(data, config, bindTickets);
+        this.playerService = new PlayerService(data, this::config, getLogger());
         this.updateService = new UpdateService(this, this::config, getLogger());
         this.loginContexts = new LoginContexts();
         this.loginGate = new LoginGate(data, data.sessions(), accessPolicy, bindTickets,
-                this::messages, this::config, this::bindingGateOperational, this::bindingGateMaintenance);
+                this::messages, this::config, this::bindingGateOperational, this::bindingGateMaintenance,
+                identityResolver::bedrockOnline);
 
         getServer().getPluginManager().registerEvents(new LoginListener(this, loginContexts), this);
         getServer().getPluginManager().registerEvents(new SessionListener(this, loginContexts), this);
@@ -144,6 +148,10 @@ public final class CarbonGuardPlugin extends JavaPlugin {
         scheduleTasks();
         getLogger().info("CarbonGuard 已启用 | Paper 26.2 | " + identityResolver.integrationSummary()
                 + " | 入服拦截=" + (bindingGateOperational() ? "开启" : "关闭"));
+        PlayerService players = playerService;
+        if (players != null) {
+            players.backfillAsync();
+        }
     }
 
     /**
@@ -151,6 +159,7 @@ public final class CarbonGuardPlugin extends JavaPlugin {
      * leases so the per-IP counter is not silently reset to zero.
      */
     private void resumeOnlinePlayers() {
+        long now = TimeUtil.now();
         for (Player player : getServer().getOnlinePlayers()) {
             try {
                 String ip = IpUtil.normalize(
@@ -160,6 +169,7 @@ public final class CarbonGuardPlugin extends JavaPlugin {
                 data.sessions().confirm(player.getUniqueId(), acquired.sessionId());
                 data.sessions().confirmOrCreate(ip, identity.key(), player.getUniqueId(), acquired.sessionId());
                 data.touchIdentity(identity, ip);
+                data.recordJoin(identity, ip, now);
             } catch (Throwable error) {
                 getLogger().log(Level.WARNING, "恢复在线会话失败: " + player.getName(), error);
             }
@@ -367,6 +377,13 @@ public final class CarbonGuardPlugin extends JavaPlugin {
                 }
             }, 60L * 20L, period));
         }
+
+        tasks.add(getServer().getScheduler().runTaskTimerAsynchronously(this, () -> {
+            PlayerService service = playerService;
+            if (service != null) {
+                service.purgeAsync();
+            }
+        }, 10L * 60L * 20L, 6L * 60L * 60L * 20L));
     }
 
     private synchronized void cancelTasks() {
@@ -411,6 +428,8 @@ public final class CarbonGuardPlugin extends JavaPlugin {
         adminService = new AdminService(data, config, bindTickets);
         data.setRecordStats(next.stats().enable());
         accessPolicy.refresh();
+        playerService = new PlayerService(data, this::config, getLogger());
+        identityResolver.invalidateCache();
         if (disableBStatsIfNeeded()) {
             warnings.add("bstats 已关闭；需重启服务器后才会按新配置重新上报。");
         }
@@ -593,6 +612,10 @@ public final class CarbonGuardPlugin extends JavaPlugin {
 
     public AdminService adminService() {
         return adminService;
+    }
+
+    public PlayerService playerService() {
+        return playerService;
     }
 
     public WebServer webServer() {

@@ -2,7 +2,7 @@
 
 CarbonGuard itself is licensed under **GPL-3.0-only**. See [LICENSE](LICENSE).
 
-The following components are included in the shaded `CarbonGuard-1.2.0.jar`.
+The following components are included in the shaded `CarbonGuard-1.3.0.jar`.
 They remain under their respective licenses; nothing in the CarbonGuard license
 overrides those terms.
 

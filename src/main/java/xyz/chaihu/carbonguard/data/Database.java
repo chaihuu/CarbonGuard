@@ -51,7 +51,7 @@ import xyz.chaihu.carbonguard.config.CarbonGuardConfig;
  * Writes are serialised on one thread to keep SQLite lock contention predictable.</p>
  */
 public final class Database implements AutoCloseable {
-    public static final int SCHEMA_VERSION = 2;
+    public static final int SCHEMA_VERSION = 3;
     /** Bounded to keep a login flood from exhausting heap; callers see a failed future. */
     private static final int WRITE_QUEUE_CAPACITY = 4_096;
     private static final List<String> SCHEMA = List.of(
@@ -72,6 +72,18 @@ public final class Database implements AutoCloseable {
             "CREATE INDEX IF NOT EXISTS idx_identities_uuid ON identities(uuid)",
             "CREATE INDEX IF NOT EXISTS idx_identities_name ON identities(player_name COLLATE NOCASE)",
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_identities_xuid ON identities(xuid) WHERE xuid IS NOT NULL",
+            """
+            CREATE TABLE IF NOT EXISTS player_profiles (
+                identity_key TEXT PRIMARY KEY,
+                player_name TEXT NOT NULL,
+                first_join INTEGER NOT NULL,
+                last_login INTEGER NOT NULL,
+                login_count INTEGER NOT NULL DEFAULT 0,
+                play_seconds INTEGER NOT NULL DEFAULT 0,
+                last_online_at INTEGER NOT NULL DEFAULT 0
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_player_profiles_last_login ON player_profiles(last_login)",
             """
             CREATE TABLE IF NOT EXISTS bindings (
                 identity_key TEXT PRIMARY KEY

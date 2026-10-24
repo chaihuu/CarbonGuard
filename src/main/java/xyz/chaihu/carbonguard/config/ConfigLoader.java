@@ -90,6 +90,7 @@ public final class ConfigLoader {
                 "ip-limit.grace-threshold", warnings);
         IpLimitMode mode = enumValue(IpLimitMode.class, cfg.getString("ip-limit.mode", "REJECT"),
                 IpLimitMode.REJECT, "ip-limit.mode", warnings);
+        boolean exemptBedrock = cfg.getBoolean("ip-limit.exempt-bedrock", true);
         List<String> ipLimitIps = stringList(cfg, "ip-limit.whitelist-ips");
         List<String> ipLimitPlayers = stringList(cfg, "ip-limit.whitelist-players");
         validateCidrs(ipLimitIps, "ip-limit.whitelist-ips", warnings);
@@ -117,7 +118,7 @@ public final class ConfigLoader {
                 && !bindAddress.equals("::")) {
             warnings.add("web.bind-address 不是回环或通配地址；请确认防火墙与反向代理已正确配置。");
         }
-        int webPort = clamp(cfg.getInt("web.port", 8_080), 1, 65_535, "web.port", warnings);
+        int webPort = clamp(cfg.getInt("web.port", 9_981), 1, 65_535, "web.port", warnings);
         String rawAdminKey = string(cfg, "web.admin-key", "");
         String adminKey = expandSecret(rawAdminKey);
         boolean adminKeyGenerated = false;
@@ -209,6 +210,9 @@ public final class ConfigLoader {
                 "stats.retention-days", warnings);
         int reviewAllowHours = clamp(cfg.getInt("review.approval-ttl-hours", 168), 0, 87_600,
                 "review.approval-ttl-hours", warnings);
+        boolean playersEnable = cfg.getBoolean("players.enable", true);
+        int playersRetention = clamp(cfg.getInt("players.retention-days", 0), 0, 36_500,
+                "players.retention-days", warnings);
 
         boolean bStatsEnable = cfg.getBoolean("bstats.enable", true);
         int bStatsId = clamp(cfg.getInt("bstats.plugin-id", 0), 0, 1_000_000,
@@ -264,7 +268,7 @@ public final class ConfigLoader {
                 debug,
                 new CarbonGuardConfig.Storage(dbPath,
                         new CarbonGuardConfig.Pool(loginPool, webPool, poolTimeout, cacheRefresh)),
-                new CarbonGuardConfig.IpLimit(ipLimitEnable, maxAccounts, grace, mode,
+                new CarbonGuardConfig.IpLimit(ipLimitEnable, maxAccounts, grace, mode, exemptBedrock,
                         List.copyOf(ipLimitIps), List.copyOf(ipLimitPlayers)),
                 new CarbonGuardConfig.Ban(banEnable,
                         new CarbonGuardConfig.Ban.IdUidXuid(idBan),
@@ -279,6 +283,7 @@ public final class ConfigLoader {
                 new CarbonGuardConfig.BStats(bStatsEnable, bStatsId),
                 new CarbonGuardConfig.UpdateCheck(updateEnable, updateEndpoint, updateInterval,
                         updateDownload, updateTimeout),
+                new CarbonGuardConfig.Players(playersEnable, playersRetention),
                 new CarbonGuardConfig.Whitelist(whitelistEnable, List.copyOf(whitelistIps),
                         List.copyOf(whitelistPlayers))
         );

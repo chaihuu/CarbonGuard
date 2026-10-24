@@ -28,6 +28,7 @@
     <button class="tab" type="button" data-page="bind">绑定验证</button>
     <button class="tab" type="button" data-page="bans">封禁查询</button>
     <button class="tab" type="button" data-page="bindings">绑定管理</button>
+    <button class="tab" type="button" data-page="players">玩家数据</button>
     <button class="tab" type="button" data-page="stats">统计概览</button>
   </nav>
   <button id="key-button" class="key-button" type="button" title="管理密钥">管理密钥</button>
@@ -186,7 +187,35 @@
     </div>
   </section>
 
-  <section id="page-stats" class="page hidden" aria-labelledby="stats-title">    <div class="hero compact">
+  <section id="page-players" class="page hidden" aria-labelledby="players-title">
+    <div class="hero compact">
+      <p class="eyebrow">PLAYERS</p>
+      <h1 id="players-title">玩家数据</h1>
+      <p class="lede">记录每位玩家的初次加入时间、邮箱绑定时间、最近登录、登录次数与累计游玩时长。</p>
+    </div>
+
+    <div id="players-content" class="admin-content hidden">
+      <div class="panel">
+        <form id="player-search-form" class="inline-form" autocomplete="off">
+          <label class="sr-only" for="player-query">查询</label>
+          <input id="player-query" type="search" maxlength="100" placeholder="玩家名 / XUID / UUID / 邮箱 / QQ">
+          <button class="primary" type="submit">查询</button>
+        </form>
+        <p id="players-status" class="status" role="status" aria-live="polite"></p>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h2>玩家记录</h2>
+          <span id="player-count" class="badge">0</span>
+        </div>
+        <div id="player-list" class="list"></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="page-stats" class="page hidden" aria-labelledby="stats-title">
+    <div class="hero compact">
       <p class="eyebrow">OVERVIEW</p>
       <h1 id="stats-title">运行统计</h1>
       <p class="lede">统计来自登录事件与内存在线会话，不会参与登录判定。</p>

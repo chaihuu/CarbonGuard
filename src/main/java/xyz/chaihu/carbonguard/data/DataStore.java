@@ -43,6 +43,7 @@ import xyz.chaihu.carbonguard.data.model.ReviewAllowEntry;
 import xyz.chaihu.carbonguard.data.repo.BanRepository;
 import xyz.chaihu.carbonguard.data.repo.BindingRepository;
 import xyz.chaihu.carbonguard.data.repo.IdentityRepository;
+import xyz.chaihu.carbonguard.data.repo.PlayerRepository;
 import xyz.chaihu.carbonguard.data.repo.ReviewRepository;
 import xyz.chaihu.carbonguard.data.repo.StatsRepository;
 import xyz.chaihu.carbonguard.data.repo.VerificationRepository;
@@ -59,6 +60,7 @@ public final class DataStore implements AutoCloseable {
     private final ReviewRepository reviews = new ReviewRepository();
     private final StatsRepository stats = new StatsRepository();
     private final VerificationRepository verification = new VerificationRepository();
+    private final PlayerRepository players = new PlayerRepository();
     private final BindingCache bindingCache = new BindingCache();
     private final BanCache banCache = new BanCache();
     private final ReviewAllowCache reviewCache = new ReviewAllowCache();
@@ -77,32 +79,52 @@ public final class DataStore implements AutoCloseable {
         if (floodgateAvailable) {
             migrateFallbackIdentities();
         }
+        backfillPlayerProfiles();
         refreshCaches();
         logger.info("登录缓存已预热: bindings=" + bindingCache.size()
                 + ", activeBans=" + banCache.banCount()
                 + ", ipAssociations=" + banCache.associationCount());
     }
 
+    private void backfillPlayerProfiles() {
+        if (!config.players().enable()) {
+            return;
+        }
+        try {
+            int created = database.coreNow(connection ->
+                    players.backfillFromIdentities(connection, TimeUtil.now()));
+            if (created > 0) {
+                logger.info("玩家数据：已为 " + created + " 个历史身份补齐记录");
+            }
+        } catch (SQLException e) {
+            logger.log(Level.WARNING, "玩家数据补齐失败", e);
+        }
+    }
+
     /**
      * Rebuilds all read caches. This is called at startup, on reload and periodically
-     * by the plugin scheduler; it never runs on the pre-login path.
+     * by the plugin scheduler; it never runs on the pre-login path. All queries share
+     * one connection and one read snapshot.
      */
     public void refreshCaches() throws SQLException {
         long now = TimeUtil.now();
         long bindingVersion = bindingCache.version();
         long banVersion = banCache.version();
         long reviewVersion = reviewCache.version();
-        Map<String, Binding> loadedBindings = database.coreNow(bindings::loadAll);
-        List<BanRecord> loadedBans = database.coreNow(connection -> bans.loadActiveBans(connection, now));
-        List<AssociationHit> loadedAssociations = database.coreNow(
-                connection -> bans.loadActiveAssociations(connection, now));
-        List<ReviewAllowEntry> loadedReviews = database.coreNow(
-                connection -> reviews.loadActiveAllowlist(connection, now));
+        Caches loaded = database.coreNow(connection -> new Caches(
+                bindings.loadAll(connection),
+                bans.loadActiveBans(connection, now),
+                bans.loadActiveAssociations(connection, now),
+                reviews.loadActiveAllowlist(connection, now)));
         // A write-through may have landed while the queries ran. In that case the
         // snapshot is already newer than the query; skip it rather than roll back.
-        bindingCache.replaceAllIfUnchanged(loadedBindings, bindingVersion);
-        banCache.replaceAllIfUnchanged(loadedBans, loadedAssociations, banVersion);
-        reviewCache.replaceAllIfUnchanged(loadedReviews, reviewVersion);
+        bindingCache.replaceAllIfUnchanged(loaded.bindings(), bindingVersion);
+        banCache.replaceAllIfUnchanged(loaded.bans(), loaded.associations(), banVersion);
+        reviewCache.replaceAllIfUnchanged(loaded.reviews(), reviewVersion);
+    }
+
+    private record Caches(Map<String, Binding> bindings, List<BanRecord> bans,
+                          List<AssociationHit> associations, List<ReviewAllowEntry> reviews) {
     }
 
     /**
@@ -251,20 +273,21 @@ public final class DataStore implements AutoCloseable {
 
     public void recordLogin(PlayerIdentity identity, String ip, String outcome, String detail) {
         long now = TimeUtil.now();
-        UUID uuid = identity.uuid();
         database.writeTransaction(connection -> {
             identities.upsert(connection, identity, ip, now);
-            try (PreparedStatement ps = connection.prepareStatement("""
-                    INSERT INTO ip_history(identity_key, ip, first_seen, last_seen, seen_count)
-                    VALUES(?,?,?,?,1)
-                    ON CONFLICT(identity_key, ip) DO UPDATE SET
-                        last_seen=excluded.last_seen, seen_count=ip_history.seen_count+1
-                    """)) {
-                ps.setString(1, identity.key());
-                ps.setString(2, ip);
-                ps.setLong(3, now);
-                ps.setLong(4, now);
-                ps.executeUpdate();
+            if (!ip.startsWith("0.0.0.0")) {
+                try (PreparedStatement ps = connection.prepareStatement("""
+                        INSERT INTO ip_history(identity_key, ip, first_seen, last_seen, seen_count)
+                        VALUES(?,?,?,?,1)
+                        ON CONFLICT(identity_key, ip) DO UPDATE SET
+                            last_seen=excluded.last_seen, seen_count=ip_history.seen_count+1
+                        """)) {
+                    ps.setString(1, identity.key());
+                    ps.setString(2, ip);
+                    ps.setLong(3, now);
+                    ps.setLong(4, now);
+                    ps.executeUpdate();
+                }
             }
             if (recordStats) {
                 stats.recordLogin(connection, identity.key(), identity.playerName(), ip, outcome, detail, now);
@@ -277,10 +300,47 @@ public final class DataStore implements AutoCloseable {
         });
     }
 
+    /**
+     * Marks the first successful join and bumps the login counter. The identity row
+     * is upserted in the same transaction so the profile FK is always satisfied
+     * (e.g. a player who passed pre-login but crashed before the queued login write).
+     */
+    public void recordJoin(PlayerIdentity identity, String ip, long now) {
+        String effectiveIp = ip == null || ip.isBlank() ? "0.0.0.0" : ip;
+        database.writeTransaction(connection -> {
+            identities.upsert(connection, identity, effectiveIp, now);
+            if (config.players().enable()) {
+                players.join(connection, identity.key(), identity.playerName(), now);
+            }
+            return null;
+        }).whenComplete((ignored, error) -> {
+            if (error != null) {
+                logger.log(Level.FINE, "记录玩家加入失败", error);
+            }
+        });
+    }
+
+    /**
+     * Records the online interval for the player's profile. Called on quit; the
+     * write is queued so the vacating main thread is never blocked.
+     */
+    public void recordPlaytime(PlayerIdentity identity, long onlineMillis) {
+        long seconds = Math.max(0L, onlineMillis / 1_000L);
+        database.write(connection -> players.addPlaytime(connection, identity.key(), seconds))
+                .whenComplete((ignored, error) -> {
+                    if (error != null) {
+                        logger.log(Level.FINE, "记录游玩时长失败", error);
+                    }
+                });
+    }
+
     public void touchIdentity(PlayerIdentity identity, String ip) {
         long now = TimeUtil.now();
         database.writeTransaction(connection -> {
             identities.touch(connection, identity, ip, now);
+            if (ip.startsWith("0.0.0.0")) {
+                return null;
+            }
             try (PreparedStatement ps = connection.prepareStatement("""
                     INSERT INTO ip_history(identity_key, ip, first_seen, last_seen, seen_count)
                     VALUES(?,?,?,?,1)
@@ -335,6 +395,10 @@ public final class DataStore implements AutoCloseable {
 
     public VerificationRepository verification() {
         return verification;
+    }
+
+    public PlayerRepository players() {
+        return players;
     }
 
     public BindingCache bindingCache() {

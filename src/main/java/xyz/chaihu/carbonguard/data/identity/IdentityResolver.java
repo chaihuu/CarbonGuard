@@ -20,7 +20,9 @@
 
 package xyz.chaihu.carbonguard.data.identity;
 
+import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import org.bukkit.Bukkit;
@@ -37,6 +39,14 @@ public final class IdentityResolver {
     private final Logger logger;
     private final boolean floodgatePresent;
     private final boolean geyserPresent;
+    /**
+     * Per-UUID verdict cache. Pre-login resolution runs on connection threads and
+     * asks Floodgate/Geyser on every attempt; caching removes repeated reflection
+     * and map lookups for reconnecting players while still re-checking unknown
+     * UUIDs.
+     */
+    private final Map<UUID, CachedVerdict> verdictCache = new ConcurrentHashMap<>();
+    private static final int VERDICT_CACHE_MAX = 8_192;
 
     public IdentityResolver(Logger logger) {
         this.logger = logger;
@@ -47,6 +57,16 @@ public final class IdentityResolver {
 
     public PlayerIdentity resolve(UUID uuid, String playerName) {
         String name = playerName == null || playerName.isBlank() ? uuid.toString() : playerName;
+        CachedVerdict cached = verdictCache.get(uuid);
+        if (cached != null) {
+            return cached.toIdentity(uuid, name);
+        }
+        PlayerIdentity identity = resolveUncached(uuid, name);
+        remember(uuid, identity);
+        return identity;
+    }
+
+    private PlayerIdentity resolveUncached(UUID uuid, String name) {
         if (floodgatePresent) {
             try {
                 FloodgateBridge.Lookup lookup = FloodgateBridge.lookup(uuid);
@@ -76,12 +96,60 @@ public final class IdentityResolver {
         return PlayerIdentity.javaPlayer(uuid, name);
     }
 
+    private void remember(UUID uuid, PlayerIdentity identity) {
+        if (verdictCache.size() >= VERDICT_CACHE_MAX) {
+            verdictCache.clear();
+        }
+        verdictCache.put(uuid, CachedVerdict.of(identity));
+    }
+
+    /** Clears the verdict cache, e.g. after a reload when Geyser/Floodgate changed. */
+    public void invalidateCache() {
+        verdictCache.clear();
+    }
+
+    private record CachedVerdict(Kind kind, String xuid, String observedXuid) {
+        enum Kind { XUID, BEDROCK_FALLBACK, JAVA }
+
+        static CachedVerdict of(PlayerIdentity identity) {
+            return switch (identity.source()) {
+                case FLOODGATE -> new CachedVerdict(Kind.XUID, identity.xuid(), identity.observedXuid());
+                case UUID_FALLBACK -> new CachedVerdict(Kind.BEDROCK_FALLBACK, null, identity.observedXuid());
+                case JAVA -> new CachedVerdict(Kind.JAVA, null, null);
+            };
+        }
+
+        PlayerIdentity toIdentity(UUID uuid, String name) {
+            return switch (kind) {
+                case XUID -> PlayerIdentity.xuid(uuid, name, xuid, observedXuid);
+                case BEDROCK_FALLBACK -> PlayerIdentity.fallback(uuid, name, observedXuid);
+                case JAVA -> PlayerIdentity.javaPlayer(uuid, name);
+            };
+        }
+    }
+
     public boolean floodgatePresent() {
         return floodgatePresent;
     }
 
     public boolean geyserPresent() {
         return geyserPresent;
+    }
+
+    /**
+     * True when the UUID is a Bedrock player currently connected through Geyser.
+     * Used by the per-IP limit exemption; returns false on any integration failure.
+     */
+    public boolean bedrockOnline(UUID uuid) {
+        if (uuid == null || !geyserPresent) {
+            return false;
+        }
+        try {
+            return GeyserBridge.online(uuid);
+        } catch (LinkageError | RuntimeException e) {
+            logger.log(Level.FINE, "Geyser 在线状态查询失败", e);
+            return false;
+        }
     }
 
     public String integrationSummary() {

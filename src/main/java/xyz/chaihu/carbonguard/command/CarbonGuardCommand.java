@@ -41,6 +41,7 @@ import xyz.chaihu.carbonguard.config.CarbonGuardConfig;
 import xyz.chaihu.carbonguard.data.model.BanRecord;
 import xyz.chaihu.carbonguard.data.model.Binding;
 import xyz.chaihu.carbonguard.data.model.PlayerIdentity;
+import xyz.chaihu.carbonguard.service.PlayerService;
 import xyz.chaihu.carbonguard.util.DurationParser;
 import xyz.chaihu.carbonguard.util.IpUtil;
 import xyz.chaihu.carbonguard.util.TimeUtil;
@@ -113,24 +114,31 @@ public final class CarbonGuardCommand implements TabExecutor {
             }
             PlayerIdentity identity = optional.get();
             Binding binding = plugin.data().bindingOf(identity.key()).orElse(null);
-            plugin.banService().activeBanFor(identity).whenComplete((activeBan, error) -> {
-                if (error != null) {
-                    plugin.getLogger().log(Level.WARNING, "查询封禁状态失败", error);
+            plugin.playerService().profile(identity).whenComplete((profile, profileError) -> {
+                if (profileError != null) {
+                    plugin.getLogger().log(Level.FINE, "查询玩家数据失败", profileError);
                 }
-                String banText = activeBan != null && activeBan.isPresent()
-                        ? "#" + activeBan.get().id() + " " + activeBan.get().reason()
-                        : "无";
-                String bindingText = binding == null ? "未绑定" :
-                        binding.email() + " / QQ " + binding.qq();
-                String ip = plugin.data().sessions().ipOf(identity.uuid()).orElse("-");
-                sync(() -> sender.sendMessage(plugin.messages().component("command.status-player", Map.of(
-                        "player", identity.playerName(),
-                        "identity", identity.displayIdentity(),
-                        "source", identity.source().name(),
-                        "ip", ip,
-                        "binding", bindingText,
-                        "ban", banText
-                ))));
+                plugin.banService().activeBanFor(identity).whenComplete((activeBan, error) -> {
+                    if (error != null) {
+                        plugin.getLogger().log(Level.WARNING, "查询封禁状态失败", error);
+                    }
+                    String banText = activeBan != null && activeBan.isPresent()
+                            ? "#" + activeBan.get().id() + " " + activeBan.get().reason()
+                            : "无";
+                    String bindingText = binding == null ? "未绑定" :
+                            binding.email() + " / QQ " + binding.qq();
+                    String ip = plugin.data().sessions().ipOf(identity.uuid()).orElse("-");
+                    String profileText = PlayerService.describe(profile);
+                    sync(() -> sender.sendMessage(plugin.messages().component("command.status-player", Map.of(
+                            "player", identity.playerName(),
+                            "identity", identity.displayIdentity(),
+                            "source", identity.source().name(),
+                            "ip", ip,
+                            "binding", bindingText,
+                            "ban", banText,
+                            "profile", profileText
+                    ))));
+                });
             });
         });
     }

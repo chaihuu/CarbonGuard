@@ -8,7 +8,7 @@ Paper 26.2 综合管控插件：基岩版真实 IP 接入、XUID 身份、单 IP
 - Java 包名：`xyz.chaihu.carbonguard`
 - 主类：`xyz.chaihu.carbonguard.CarbonGuardPlugin`
 - 目标平台：Paper 26.2（Adventure 5.2）
-- 构建产物：`build/libs/CarbonGuard-1.2.0.jar`
+- 构建产物：`build/libs/CarbonGuard-1.3.0.jar`
 - 源码仓库：https://github.com/chaihuu/CarbonGuard
 - 许可证：GPL-3.0-only，完整文本见 [LICENSE](LICENSE)
 
@@ -18,11 +18,12 @@ Paper 26.2 综合管控插件：基岩版真实 IP 接入、XUID 身份、单 IP
 | --- | --- |
 | Geyser 真实 IP | 依赖 Geyser/Paper 的 PROXY protocol 配置；插件读取 Paper 提供的真实连接地址 |
 | 身份 | Floodgate 存在时以 XUID 为主键；Geyser 直连且无 Floodgate 时以 UUID 降级并标记 `UUID_FALLBACK`；Java 玩家使用 UUID |
-| 单 IP 限制 | 在线会话 + 正在登录预留计数，支持宽限阈值、IP/CIDR 白名单、玩家白名单、`REJECT` / `WARN_ONLY` |
+| 单 IP 限制 | 在线会话 + 正在登录预留计数，支持宽限阈值、IP/CIDR 白名单、玩家白名单、`REJECT` / `WARN_ONLY`；基岩版（Geyser）玩家默认自动豁免 |
 | IP 关联封禁 | 封禁时记录当前与历史 IP，按 `REJECT` / `PENDING_REVIEW` / `LOG_ONLY` 处理；TTL 衰减 |
 | 邮箱绑定 | SMTP 端口可配，465 隐式 SSL / 其他端口 STARTTLS；验证码 10 分钟默认、单次消费、一次性 challenge token |
 | 入服拦截 | 默认开启；未绑定 QQ 邮箱时拒绝登录并展示带一次性 Bearer ticket 的网页面板链接 |
-| Web 面板 | 绑定验证、绑定管理/解绑、封禁查询、统计概览；管理密钥 + 每 IP 限速 + 安全响应头 |
+| 玩家数据 | 记录初次加入、绑定时间、最近登录、登录次数、累计游玩时长与最近 IP |
+| Web 面板 | 绑定验证、绑定管理/解绑、封禁查询、玩家数据、统计概览；默认端口 9981 |
 | 复核 | 通过后按 (类型, 身份, IP) 抑制重复待审，可配置有效期 |
 | 网络粒度 | IPv4 精确匹配；IPv6 默认按 /64 聚合，避免隐私地址轮换绕过限制 |
 | 匿名统计 | 可选 bStats，上报聚合模块状态，不上报玩家/IP/邮箱/密钥 |
@@ -85,7 +86,7 @@ proxies:
 ## 3. 快速开始
 
 1. 安装 Paper 26.2，Java 25。
-2. 把 `CarbonGuard-1.2.0.jar` 放入 `plugins/`。
+2. 把 `CarbonGuard-1.3.0.jar` 放入 `plugins/`。
 3. 启动一次服务器，生成 `plugins/CarbonGuard/config.yml` 与 `messages.yml`。
 4. 管理密钥：**`web.admin-key` 留空即可**。首次启动会从安全随机源生成 64 字符密钥、写入 `config.yml`，并在启动日志打印一次；`/carbonguard status` 也会显示“自动生成”的密钥（仅对 `carbonguard.admin` 可见）。日志中的密钥请立即保存。
 
@@ -132,7 +133,7 @@ proxies:
    ```yaml
    web:
      bind-address: "127.0.0.1"
-     port: 8080
+     port: 9981
      public-url: "https://carbonguard.example.com"
    ```
 
@@ -203,10 +204,13 @@ Geyser 直连且没有 Floodgate 时，无法通过 Floodgate API 获取 XUID。
 NAT、校园网、公司出口、移动网络 CGNAT、VPN/代理会让大量合法玩家共用同一公网 IP。
 
 - 默认 `ip-limit.mode: REJECT`，但建议配合 `grace-threshold`；
+- `ip-limit.exempt-bedrock: true`（默认）时，经 Geyser 连接的基岩版玩家自动豁免单 IP 限制，不占用也不消耗名额；Java 玩家、以及无法通过 Geyser 确认为在线基岩版的连接仍正常计数；
 - `ip-association.action` 默认 `PENDING_REVIEW`，而不是 `REJECT`；
 - `WARN_ONLY` / `PENDING_REVIEW` 的登录会进入 Web 待审队列；
 - 关联 IP 默认 168 小时衰减，避免历史 IP 永久累积；
 - `whitelist-ips` 支持 CIDR，`whitelist-players` 支持 XUID/UUID。
+
+> 基岩版豁免能让同一家庭出口下的多个手机/主机玩家正常登录，但也意味着限制只约束 Java 端；如需对基岩版同样计数，把 `ip-limit.exempt-bedrock` 设为 `false`。
 
 ## 6. 邮箱与绑定流程
 
@@ -241,11 +245,12 @@ NAT、校园网、公司出口、移动网络 CGNAT、VPN/代理会让大量合�
 - **绑定验证**：`/?bind=<ticket>`，支持手动粘贴令牌
 - **绑定管理**：按玩家名/XUID/UUID/邮箱/QQ 查询绑定，可解除绑定
 - **封禁查询**：按玩家名/XUID/UUID/封禁编号/IP 查询；待审队列通过（记录并在 `review.approval-ttl-hours` 内抑制同一 类型/身份/IP 的重复待审）、拒绝（踢出当前在线会话）、解封（解除封禁并清除 IP 关联）
+- **玩家数据**：按玩家名/XUID/UUID/邮箱/QQ 或 IP 查询初次加入、绑定时间、最近登录、登录次数、累计游玩时长与最近 IP
 - **统计概览**：在线、身份、绑定、封禁、24h 登录/拒绝、7 天趋势、模块状态
 
 安全措施：
 
-- 默认监听 `127.0.0.1`；
+- 默认监听 `127.0.0.1:9981`；
 - 管理接口要求 `X-CarbonGuard-Key`、`key` 查询参数或 `Authorization: Bearer`；
 - 密钥至少 24 字符、10 种不同字符，常数时间比较；
 - 管理接口每 IP 每分钟限速，公开接口单独限速；
@@ -272,6 +277,7 @@ NAT、校园网、公司出口、移动网络 CGNAT、VPN/代理会让大量合�
 | POST | `/api/admin/reviews/{id}` | `{action:"APPROVE"\|"REJECT"}` |
 | GET | `/api/admin/bindings?q=&limit=` | 绑定查询 |
 | POST | `/api/admin/bindings/unbind` | `{identity:"xuid:..."}`，解除绑定 |
+| GET | `/api/admin/players?q=&limit=` | 玩家数据查询 |
 | POST | `/api/admin/bans/{id}/unban` | 解封并清除关联 |
 
 ### 8.1 反向代理
@@ -287,7 +293,7 @@ server {
     ssl_certificate_key /etc/letsencrypt/live/carbonguard.example.com/privkey.pem;
 
     location / {
-        proxy_pass http://127.0.0.1:8080;
+        proxy_pass http://127.0.0.1:9981;
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-For $remote_addr;
         proxy_set_header X-Forwarded-Proto $scheme;
@@ -312,7 +318,7 @@ web:
 
 数据文件：`plugins/CarbonGuard/carbonguard.db`（SQLite，WAL）。
 
-表：`identities`、`bindings`、`ip_history`、`bans`、`ban_ip_assoc`、`reviews`、`review_allowlist`、`login_events`、`bind_tickets`、`email_challenges`、`identity_aliases`、`schema_meta`。
+表：`identities`、`bindings`、`ip_history`、`bans`、`ban_ip_assoc`、`reviews`、`review_allowlist`、`player_profiles`、`login_events`、`bind_tickets`、`email_challenges`、`identity_aliases`、`schema_meta`。
 
 异步设计：
 
@@ -347,7 +353,7 @@ Windows：
 ./gradlew test
 ```
 
-当前测试覆盖 CIDR（含负前缀/端口拒绝）、令牌/PBKDF2、时长解析、SQLite schema/事务/唯一约束、封禁与 IP 关联缓存、UUID_FALLBACK → XUID 迁移（含目标已存在）、身份 source 不降级、IPv6 /64 聚合、复核放行抑制、解绑、会话生命周期与 IPv6 计数、自动更新版本解析。
+当前测试覆盖 CIDR（含负前缀/端口拒绝）、令牌/PBKDF2、时长解析、SQLite schema/事务/唯一约束、封禁与 IP 关联缓存、UUID_FALLBACK → XUID 迁移（含目标已存在）、身份 source 不降级、IPv6 /64 聚合、复核放行抑制、解绑、会话生命周期与 IPv6 计数、自动更新版本解析、玩家初次加入/绑定时间/游玩时长记录与历史补齐。
 
 ## 11. 目录
 

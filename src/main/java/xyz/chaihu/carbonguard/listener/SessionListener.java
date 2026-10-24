@@ -21,6 +21,9 @@
 package xyz.chaihu.carbonguard.listener;
 
 import com.destroystokyo.paper.event.player.PlayerConnectionCloseEvent;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
@@ -31,11 +34,14 @@ import xyz.chaihu.carbonguard.CarbonGuardPlugin;
 import xyz.chaihu.carbonguard.data.model.PlayerIdentity;
 import xyz.chaihu.carbonguard.service.LoginDecision;
 import xyz.chaihu.carbonguard.util.IpUtil;
+import xyz.chaihu.carbonguard.util.TimeUtil;
 
 /** Converts pre-login reservations into online sessions and releases them on close. */
 public final class SessionListener implements Listener {
     private final CarbonGuardPlugin plugin;
     private final LoginContexts contexts;
+    /** Join timestamps used to accumulate per-player play time on quit. */
+    private final Map<UUID, Long> joinTimes = new ConcurrentHashMap<>();
 
     public SessionListener(CarbonGuardPlugin plugin, LoginContexts contexts) {
         this.plugin = plugin;
@@ -93,6 +99,8 @@ public final class SessionListener implements Listener {
                 plugin.data().queueReview(alert.type(), identity, ip, alert.banId(), alert.reason());
             }
             plugin.data().touchIdentity(identity, ip);
+            plugin.data().recordJoin(identity, ip, TimeUtil.now());
+            joinTimes.put(player.getUniqueId(), System.currentTimeMillis());
             return;
         }
 
@@ -104,12 +112,22 @@ public final class SessionListener implements Listener {
                     player.getUniqueId(), context.sessionId());
         }
         plugin.data().touchIdentity(context.identity(), context.ip());
+        plugin.data().recordJoin(context.identity(), context.ip(), TimeUtil.now());
+        joinTimes.put(player.getUniqueId(), System.currentTimeMillis());
         contexts.remove(player.getUniqueId(), context);
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
     public void onQuit(PlayerQuitEvent event) {
-        plugin.data().sessions().releaseActive(event.getPlayer().getUniqueId());
-        contexts.remove(event.getPlayer().getUniqueId());
+        Player player = event.getPlayer();
+        plugin.data().sessions().releaseActive(player.getUniqueId());
+        LoginContexts.Context context = contexts.get(player.getUniqueId()).orElse(null);
+        PlayerIdentity identity = context != null ? context.identity()
+                : plugin.identityResolver().resolve(player.getUniqueId(), player.getName());
+        Long joinedAt = joinTimes.remove(player.getUniqueId());
+        if (joinedAt != null) {
+            plugin.data().recordPlaytime(identity, System.currentTimeMillis() - joinedAt);
+        }
+        contexts.remove(player.getUniqueId());
     }
 }

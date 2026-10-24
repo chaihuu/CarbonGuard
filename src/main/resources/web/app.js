@@ -79,7 +79,7 @@ async function api(path, options = {}) {
 }
 
 function setPage(page, updateHash = true) {
-  if (!['bind', 'bans', 'bindings', 'stats'].includes(page)) page = 'bind';
+  if (!['bind', 'bans', 'bindings', 'players', 'stats'].includes(page)) page = 'bind';
   state.page = page;
   document.querySelectorAll('.tab').forEach((tab) => {
     const active = tab.dataset.page === page;
@@ -99,6 +99,7 @@ function setPage(page, updateHash = true) {
   if (adminPage && state.adminKey) {
     if (page === 'bans') loadBans();
     if (page === 'bindings') loadBindings();
+    if (page === 'players') loadPlayers();
     if (page === 'stats') loadStats();
   }
   if (updateHash) {
@@ -302,7 +303,60 @@ async function unbindIdentity(identity) {
   }
 }
 
-function renderBans(bans) {  const container = $('ban-list');
+async function loadPlayers() {
+  if (!state.adminKey) return;
+  const query = $('player-query').value.trim();
+  setStatus($('players-status'), '正在查询……');
+  try {
+    const data = await api(`/api/admin/players?q=${encodeURIComponent(query)}&limit=50`);
+    renderPlayers(data.players || []);
+    $('player-count').textContent = String(data.count || 0);
+    setStatus($('players-status'), query ? `查询完成：${data.count || 0} 条记录。` : '');
+  } catch (error) {
+    if (error.status === 401) {
+      setStatus($('unlock-status'), error.message, 'error');
+    } else {
+      setStatus($('players-status'), error.message, 'error');
+    }
+  }
+}
+
+function formatPlaytime(seconds) {
+  const total = Math.max(0, Number(seconds) || 0);
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  return hours ? `${hours} 小时 ${minutes} 分钟` : `${minutes} 分钟`;
+}
+
+function renderPlayers(players) {
+  const container = $('player-list');
+  if (!players.length) {
+    container.innerHTML = '<p class="empty">暂时没有玩家记录。</p>';
+    return;
+  }
+  container.innerHTML = players.map((player) => `
+    <article class="record">
+      <div class="record-head">
+        <div>
+          <strong>${escapeHtml(player.player || '未知玩家')}</strong>
+          <span class="state ${player.boundAt ? 'on' : 'off'}">${player.boundAt ? '已绑定' : '未绑定'}</span>
+        </div>
+        <span class="mono">${escapeHtml(player.identity || '')}</span>
+      </div>
+      <dl class="meta">
+        <div><dt>初次加入</dt><dd>${formatDate(player.firstJoin)}</dd></div>
+        <div><dt>绑定时间</dt><dd>${player.boundAt ? formatDate(player.boundAt) : '未绑定'}</dd></div>
+        <div><dt>邮箱</dt><dd>${escapeHtml(player.email || '-')}</dd></div>
+        <div><dt>最近登录</dt><dd>${formatDate(player.lastLogin)}</dd></div>
+        <div><dt>登录次数</dt><dd>${Number(player.loginCount || 0)}</dd></div>
+        <div><dt>累计游玩</dt><dd>${formatPlaytime(player.playSeconds)}</dd></div>
+        <div><dt>最近 IP</dt><dd class="mono">${escapeHtml(player.lastIp || '-')}</dd></div>
+      </dl>
+    </article>`).join('');
+}
+
+function renderBans(bans) {
+  const container = $('ban-list');
   if (!bans.length) {
     container.innerHTML = '<p class="empty">没有匹配的封禁记录。</p>';
     return;
@@ -520,6 +574,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const button = event.target.closest('button[data-unbind]');
     if (button) unbindIdentity(button.dataset.unbind);
   });
+  $('player-search-form').addEventListener('submit', (event) => {
+    event.preventDefault();
+    loadPlayers();
+  });
   $('review-list').addEventListener('click', (event) => {
     const review = event.target.closest('button[data-review]');
     if (review) {
@@ -535,7 +593,7 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   const hash = location.hash.replace('#', '');
-  const page = initialToken ? 'bind' : (['bans', 'bindings', 'stats'].includes(hash) ? hash : 'bind');
+  const page = initialToken ? 'bind' : (['bans', 'bindings', 'players', 'stats'].includes(hash) ? hash : 'bind');
   setPage(page, false);
   if (state.ticketToken) {
     loadTicket(state.ticketToken);

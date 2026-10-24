@@ -39,11 +39,10 @@ public final class TestConfig {
                 1,
                 false,
                 new CarbonGuardConfig.Storage(database, new CarbonGuardConfig.Pool(3, 3, 5_000, 60)),
-                new CarbonGuardConfig.IpLimit(true, 3, 1, IpLimitMode.REJECT,
-                        List.of("192.0.2.0/24"), List.of("xuid:999")),
+                ipLimit(true, List.of("192.0.2.0/24"), List.of("xuid:999")),
                 new CarbonGuardConfig.Ban(true, new CarbonGuardConfig.Ban.IdUidXuid(true),
                         new CarbonGuardConfig.Ban.IpAssociation(true, IpAssociationAction.PENDING_REVIEW, 168)),
-                new CarbonGuardConfig.Web(true, "127.0.0.1", 8080, "http://127.0.0.1:8080",
+                new CarbonGuardConfig.Web(true, "127.0.0.1", 9981, "https://cg.example.com",
                         "test-admin-key-with-enough-entropy-123", 120, 12, false),
                 new CarbonGuardConfig.Smtp(true, "smtp.qq.com", 587, "bot@qq.com", "auth-code",
                         "bot@qq.com", false, 10_000),
@@ -55,7 +54,21 @@ public final class TestConfig {
                 new CarbonGuardConfig.UpdateCheck(false,
                         "https://api.github.com/repos/chaihuu/CarbonGuard/releases/latest",
                         360, false, 20),
+                new CarbonGuardConfig.Players(true, 0),
                 new CarbonGuardConfig.Whitelist(true, List.of("127.0.0.1"), List.of())
         );
     }
-}
+
+    public static CarbonGuardConfig createWithBedrockExemption(Path database) {
+        CarbonGuardConfig base = create(database, false);
+        return new CarbonGuardConfig(base.configVersion(), base.debug(), base.storage(),
+                ipLimit(false, List.of(), List.of()), base.ban(), base.web(), base.smtp(),
+                base.emailVerify(), base.stats(), base.review(), base.bstats(),
+                base.updateCheck(), base.players(), base.whitelist());
+    }
+
+    private static CarbonGuardConfig.IpLimit ipLimit(boolean exemptBedrock, List<String> ips,
+                                                     List<String> players) {
+        return new CarbonGuardConfig.IpLimit(true, 3, 1, IpLimitMode.REJECT, exemptBedrock,
+                ips, players);
+    }}

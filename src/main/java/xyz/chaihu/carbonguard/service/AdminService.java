@@ -28,8 +28,6 @@ import xyz.chaihu.carbonguard.data.DataStore;
 import xyz.chaihu.carbonguard.data.Database;
 import xyz.chaihu.carbonguard.data.model.BanView;
 import xyz.chaihu.carbonguard.data.model.BindingView;
-import xyz.chaihu.carbonguard.data.model.ReviewRecord;
-import xyz.chaihu.carbonguard.data.model.ReviewStatus;
 import xyz.chaihu.carbonguard.data.model.StatsSnapshot;
 import xyz.chaihu.carbonguard.util.TimeUtil;
 
@@ -108,11 +106,6 @@ public final class AdminService {
     }
 
     private record UnbindResult(boolean removed, List<String> keys) {
-    }
-
-    public CompletableFuture<List<ReviewRecord>> pendingReviews(int limit) {
-        return data.database().webAsync(connection -> data.reviews().list(connection,
-                ReviewStatus.PENDING, Math.max(1, Math.min(200, limit))));
     }
 
     public CarbonGuardConfig config() {

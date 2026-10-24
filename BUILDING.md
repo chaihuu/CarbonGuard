@@ -36,7 +36,7 @@ Windows PowerShell：
 产物：
 
 ```text
-build/libs/CarbonGuard-1.2.0.jar
+build/libs/CarbonGuard-1.3.0.jar
 ```
 
 这是一个包含运行时依赖的 shaded jar，直接放入 Paper 的 `plugins/` 即可。不要把 `-sources`、`-javadoc` 或其他 classifier 当成插件 jar。
@@ -121,6 +121,13 @@ storage:
 - 写操作由单线程执行器串行化，SQLite 只有一个写者；
 - SQLite 开启 WAL、`busy_timeout=10000`、`foreign_keys=ON`。
 
+性能要点：
+
+- 缓存刷新在一次 `coreNow` 调用中复用同一连接完成 4 个查询，减少借还连接开销；
+- 身份解析（Floodgate/Geyser 反射调用）按 UUID 缓存，重连玩家不再重复探测；
+- 登录拒绝事件不写 `ip_history`；玩家加入只做一次 upsert + 一次 profile 写入；
+- 玩家数据补齐在异步线程执行，清理任务每 6 小时异步运行。
+
 调整建议：
 
 - 玩家量大时优先增加 `cache-refresh-seconds` 以降低刷新频率，而不是无限扩大 SQLite 池；
@@ -133,7 +140,7 @@ storage:
 # 准备一个 Paper 26.2 测试服
 java -Xms512M -Xmx1G -jar paper-26.2-134.jar --nogui
 
-# 把 build/libs/CarbonGuard-1.2.0.jar 放入 plugins/
+# 把 build/libs/CarbonGuard-1.3.0.jar 放入 plugins/
 ```
 
 期望日志：
@@ -141,15 +148,15 @@ java -Xms512M -Xmx1G -jar paper-26.2-134.jar --nogui
 ```text
 [CarbonGuard] SQLite 数据层已就绪: .../plugins/CarbonGuard/carbonguard.db
 [CarbonGuard] 登录缓存已预热: bindings=0, activeBans=0, ipAssociations=0
-[CarbonGuard] Web 面板已启动: http://127.0.0.1:8080 ...
+[CarbonGuard] Web 面板已启动: http://127.0.0.1:9981 ...
 [CarbonGuard] CarbonGuard 已启用 | Paper 26.2 | Floodgate=... | 入服拦截=...
 ```
 
 验证 Web：
 
 ```bash
-curl -i http://127.0.0.1:8080/
-curl -i http://127.0.0.1:8080/api/admin/stats \
+curl -i http://127.0.0.1:9981/
+curl -i http://127.0.0.1:9981/api/admin/stats \
   -H "X-CarbonGuard-Key: <你的密钥>"
 ```
 
@@ -239,7 +246,7 @@ LICENSES/MIT-bStats.txt    # bStats Metrics
 
 - [ ] `./gradlew clean build` 成功
 - [ ] `./gradlew verifyLicenseHeaders` 成功
-- [ ] `build/libs/CarbonGuard-1.2.0.jar` 中包含 `plugin.yml`、`config.yml`、`messages.yml`、`web/*`
+- [ ] `build/libs/CarbonGuard-1.3.0.jar` 中包含 `plugin.yml`、`config.yml`、`messages.yml`、`web/*`
 - [ ] jar 中包含 `LICENSE`、`COPYING`、`THIRD_PARTY_NOTICES.md`、`LICENSES/*`
 - [ ] 在 Paper 26.2 + Java 25 上启动无 `NoClassDefFoundError`
 - [ ] `web.admin-key` 为强随机值，或来自环境变量

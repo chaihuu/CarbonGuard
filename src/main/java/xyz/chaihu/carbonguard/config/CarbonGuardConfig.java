@@ -45,6 +45,7 @@ public record CarbonGuardConfig(
         Review review,
         BStats bstats,
         UpdateCheck updateCheck,
+        Players players,
         Whitelist whitelist
 ) {
     public record Storage(Path sqliteFile, Pool pool) {
@@ -58,12 +59,22 @@ public record CarbonGuardConfig(
             int maxAccountsPerIp,
             int graceThreshold,
             IpLimitMode mode,
+            boolean exemptBedrock,
             List<String> whitelistIps,
             List<String> whitelistPlayers
     ) {
+        public IpLimit(boolean enable, int maxAccountsPerIp, int graceThreshold, IpLimitMode mode,
+                       List<String> whitelistIps, List<String> whitelistPlayers) {
+            this(enable, maxAccountsPerIp, graceThreshold, mode, false, whitelistIps, whitelistPlayers);
+        }
+
         public int hardLimit() {
             return maxAccountsPerIp + graceThreshold;
         }
+    }
+
+    /** Per-player history retention; 0 keeps every record. */
+    public record Players(boolean enable, int retentionDays) {
     }
 
     public record Ban(boolean enable, IdUidXuid idUidXuid, IpAssociation ipAssociation) {

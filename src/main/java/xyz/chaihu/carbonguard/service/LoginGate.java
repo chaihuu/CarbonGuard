@@ -24,7 +24,9 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.UUID;
 import java.util.function.BooleanSupplier;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
 import net.kyori.adventure.text.Component;
 import xyz.chaihu.carbonguard.config.CarbonGuardConfig;
@@ -53,11 +55,12 @@ public final class LoginGate {
     private final Supplier<CarbonGuardConfig> configSupplier;
     private final BooleanSupplier bindingOperational;
     private final BooleanSupplier bindingMaintenance;
+    private final Predicate<UUID> bedrock;
 
     public LoginGate(DataStore data, SessionRegistry sessions, AccessPolicy accessPolicy,
                      BindTicketService tickets, Supplier<Messages> messages,
                      Supplier<CarbonGuardConfig> configSupplier, BooleanSupplier bindingOperational,
-                     BooleanSupplier bindingMaintenance) {
+                     BooleanSupplier bindingMaintenance, Predicate<UUID> bedrock) {
         this.data = data;
         this.sessions = sessions;
         this.accessPolicy = accessPolicy;
@@ -66,6 +69,7 @@ public final class LoginGate {
         this.configSupplier = configSupplier;
         this.bindingOperational = bindingOperational;
         this.bindingMaintenance = bindingMaintenance;
+        this.bedrock = bedrock;
     }
 
     public LoginDecision evaluate(PlayerIdentity identity, String ip) {
@@ -145,12 +149,17 @@ public final class LoginGate {
         }
 
         boolean limitWhitelisted = accessPolicy.ipLimitWhitelisted(identity, ip);
+        boolean bedrockExempt = config.ipLimit().enable() && config.ipLimit().exemptBedrock()
+                && identity.bedrock() && bedrock.test(identity.uuid());
         int hardLimit = 0;
-        if (config.ipLimit().enable() && !limitWhitelisted) {
+        if (config.ipLimit().enable() && !limitWhitelisted && !bedrockExempt) {
             hardLimit = config.ipLimit().hardLimit();
         }
         SessionRegistry.AcquireResult acquire = sessions.tryAcquire(ip, identity.key(), identity.uuid(), hardLimit);
         String sessionId = acquire.sessionId();
+        if (bedrockExempt) {
+            notes.add("ip_limit_bedrock_exempt=true");
+        }
         if (!acquire.allowed()) {
             notes.add("ip_limit=" + acquire.activeCount() + "/" + hardLimit);
             if (config.ipLimit().mode() == IpLimitMode.REJECT) {
