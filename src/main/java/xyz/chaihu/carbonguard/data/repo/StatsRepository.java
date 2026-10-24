@@ -114,6 +114,11 @@ public final class StatsRepository {
             removed += ps.executeUpdate();
         }
         try (PreparedStatement ps = connection.prepareStatement(
+                "DELETE FROM verification_codes WHERE expires_at < ?")) {
+            ps.setLong(1, now - 86_400_000L);
+            removed += ps.executeUpdate();
+        }
+        try (PreparedStatement ps = connection.prepareStatement(
                 "DELETE FROM email_challenges WHERE expires_at < ?")) {
             ps.setLong(1, now - 86_400_000L);
             removed += ps.executeUpdate();

@@ -39,7 +39,6 @@ import xyz.chaihu.carbonguard.data.model.ReviewRecord;
 import xyz.chaihu.carbonguard.data.model.ReviewStatus;
 import xyz.chaihu.carbonguard.data.model.StatsSnapshot;
 import xyz.chaihu.carbonguard.service.AuthException;
-import xyz.chaihu.carbonguard.service.BindTicketService;
 import xyz.chaihu.carbonguard.util.IpUtil;
 import xyz.chaihu.carbonguard.util.Tokens;
 
@@ -93,50 +92,66 @@ public final class ApiHandler implements HttpHandler {
             return;
         }
         switch (path) {
-            case "/api/public/ticket" -> ticket(exchange);
+            case "/api/public/lookup" -> lookup(exchange);
             case "/api/public/request-code" -> requestCode(exchange);
             case "/api/public/verify" -> verify(exchange);
             default -> HttpSupport.error(exchange, 404, "NOT_FOUND", "接口不存在。");
         }
     }
 
-    private void ticket(HttpExchange exchange) {
+    /**
+     * Resolves the ID the player typed on the binding page. The response contains only
+     * public identity facts (name, when the code mailbox hint is wanted) so the page can
+     * confirm the right account before anything is bound.
+     */
+    private void lookup(HttpExchange exchange) {
+        if (!bindingEnabled(exchange)) {
+            return;
+        }
         if (!requireMethod(exchange, "GET")) {
             return;
         }
-        String token = HttpSupport.query(exchange).getOrDefault("token", "");
-        BindTicketService.Ticket ticket = plugin.bindTicketService().find(token).orElse(null);
-        if (ticket == null) {
-            HttpSupport.error(exchange, 410, "INVALID_TICKET", "绑定链接无效或已过期，请重新进入服务器。");
-            return;
-        }
-        CarbonGuardConfig config = plugin.config();
-        JsonObject body = new JsonObject();
-        body.addProperty("playerName", ticket.identity().playerName());
-        body.addProperty("bedrock", ticket.identity().bedrock());
-        body.addProperty("identityType", ticket.identity().type().name());
-        body.addProperty("expiresAt", ticket.expiresAt());
-        body.addProperty("requireQqEmail", config.emailVerify().requireQqEmail());
-        JsonArray domains = new JsonArray();
-        config.emailVerify().allowedEmailDomains().forEach(domains::add);
-        body.add("allowedEmailDomains", domains);
-        HttpSupport.ok(exchange, body);
-    }
-
-    private void requestCode(HttpExchange exchange) {
-        if (!requireMethod(exchange, "POST")) {
-            return;
-        }
-        JsonObject request = HttpSupport.readJson(exchange);
-        String ticket = HttpSupport.string(request, "ticket");
-        String email = HttpSupport.string(request, "email");
-        plugin.authService().requestCode(ticket, email).whenComplete((issued, error) -> {
+        String playerId = HttpSupport.query(exchange).getOrDefault("id", "");
+        plugin.authService().lookup(playerId).whenComplete((lookup, error) -> {
             if (error != null) {
                 fail(exchange, error);
                 return;
             }
             JsonObject body = new JsonObject();
-            body.addProperty("challengeToken", issued.challengeToken());
+            body.addProperty("playerId", lookup.playerId());
+            body.addProperty("playerName", lookup.playerName());
+            body.addProperty("uuid", lookup.uuid());
+            body.addProperty("xuid", lookup.xuid());
+            body.addProperty("bound", lookup.bound());
+            body.addProperty("boundEmail", lookup.boundEmail());
+            // The mailbox is always <ID>@qq.com; the page shows it read-only.
+            body.addProperty("email", lookup.codeEmail());
+            body.addProperty("emailDomain", CarbonGuardConfig.Binding.QQ_MAIL_DOMAIN);
+            body.addProperty("avatarUrl", lookup.avatarUrl());
+            body.addProperty("showAvatars", lookup.binding().showAvatars());
+            HttpSupport.ok(exchange, body);
+        });
+    }
+
+    /** Issues a one-time code for the resolved account. No login ticket is involved. */
+    private void requestCode(HttpExchange exchange) {
+        if (!bindingEnabled(exchange)) {
+            return;
+        }
+        if (!requireMethod(exchange, "POST")) {
+            return;
+        }
+        JsonObject request = HttpSupport.readJson(exchange);
+        String playerId = HttpSupport.string(request, "playerId");
+        // Informational only: the server always sends to <playerId>@qq.com.
+        String email = HttpSupport.string(request, "email");
+        plugin.authService().requestCode(playerId, email).whenComplete((issued, error) -> {
+            if (error != null) {
+                fail(exchange, error);
+                return;
+            }
+            JsonObject body = new JsonObject();
+            body.addProperty("requestToken", issued.requestToken());
             body.addProperty("expiresAt", issued.expiresAt());
             body.addProperty("maskedEmail", issued.maskedEmail());
             body.addProperty("ttlSeconds", issued.ttlSeconds());
@@ -146,24 +161,35 @@ public final class ApiHandler implements HttpHandler {
     }
 
     private void verify(HttpExchange exchange) {
+        if (!bindingEnabled(exchange)) {
+            return;
+        }
         if (!requireMethod(exchange, "POST")) {
             return;
         }
         JsonObject request = HttpSupport.readJson(exchange);
-        String challenge = HttpSupport.string(request, "challengeToken");
+        String token = HttpSupport.string(request, "requestToken");
         String code = HttpSupport.string(request, "code");
-        String qq = HttpSupport.string(request, "qq");
-        plugin.authService().verify(challenge, code, qq).whenComplete((binding, error) -> {
+        plugin.authService().verify(token, code).whenComplete((binding, error) -> {
             if (error != null) {
                 fail(exchange, error);
                 return;
             }
             JsonObject body = new JsonObject();
             body.addProperty("message", "绑定成功，请重新连接服务器。");
-            body.addProperty("qq", binding.qq());
+            body.addProperty("playerId", binding.qq());
+            body.addProperty("email", binding.email());
             body.addProperty("verifiedAt", binding.verifiedAt());
             HttpSupport.ok(exchange, body);
         });
+    }
+
+    private boolean bindingEnabled(HttpExchange exchange) {
+        if (plugin.config().binding().enable()) {
+            return true;
+        }
+        HttpSupport.error(exchange, 503, "BINDING_DISABLED", "服务器已关闭自助绑定，请联系管理员。");
+        return false;
     }
 
     private void handleAdmin(HttpExchange exchange, String path) {
@@ -276,6 +302,9 @@ public final class ApiHandler implements HttpHandler {
         modules.addProperty("ipAssociationAction", config.ban().ipAssociation().action().name());
         modules.addProperty("emailVerify", config.emailVerify().enable());
         modules.addProperty("requireBinding", config.emailVerify().requireBinding());
+        modules.addProperty("bindingPage", config.binding().enable());
+        modules.addProperty("bindingUrl", config.binding().url(config.web().publicUrl()));
+        modules.addProperty("bindingMailboxDomain", CarbonGuardConfig.Binding.QQ_MAIL_DOMAIN);
         modules.addProperty("bindingGateOperational", plugin.bindingGateOperational());
         modules.addProperty("smtp", config.smtp().configured());
         modules.addProperty("smtpOperational", plugin.mailService() != null
@@ -358,6 +387,7 @@ public final class ApiHandler implements HttpHandler {
         JsonObject item = new JsonObject();
         item.addProperty("identity", binding.identityKey());
         item.addProperty("player", binding.playerName());
+        item.addProperty("playerId", binding.playerId());
         item.addProperty("email", binding.email());
         item.addProperty("qq", binding.qq());
         item.addProperty("verifiedAt", binding.verifiedAt());

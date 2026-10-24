@@ -11,9 +11,9 @@ const $ = (id) => document.getElementById(id);
 const state = {
   page: 'bind',
   adminKey: sessionStorage.getItem('carbonguard.adminKey') || '',
-  ticketToken: '',
-  challengeToken: '',
-  ticket: null,
+  playerId: '',
+  lookup: null,
+  requestToken: '',
   cooldownTimer: 0
 };
 
@@ -126,45 +126,117 @@ function saveAdminKey(key) {
 
 /* ----------------------------- binding page ----------------------------- */
 
-async function loadTicket(token) {
-  state.ticketToken = token.trim();
-  if (!state.ticketToken) {
-    $('bind-no-token').classList.remove('hidden');
-    $('bind-ticket').classList.add('hidden');
-    return;
-  }
-  $('bind-no-token').classList.add('hidden');
-  setStatus($('bind-status'), '正在校验绑定链接……');
-  try {
-    const data = await api(`/api/public/ticket?token=${encodeURIComponent(state.ticketToken)}`);
-    state.ticket = data;
-    $('bind-player').textContent = data.playerName || '未知玩家';
-    $('bind-expiry').textContent = formatDate(data.expiresAt);
-    $('bind-identity-type').textContent = data.identityType === 'XUID' ? 'XUID（Floodgate）' : 'UUID';
-    const domains = data.allowedEmailDomains || [];
-    $('email-hint').textContent = domains.length
-      ? `允许的邮箱域名：${domains.join('、')}`
-      : '请输入有效邮箱地址。';
-    $('bind-ticket').classList.remove('hidden');
-    setStatus($('bind-error'), '');
-    $('bind-status').textContent = '';
-  } catch (error) {
-    $('bind-ticket').classList.add('hidden');
-    $('bind-no-token').classList.remove('hidden');
-    setStatus($('bind-error'), error.message, 'error');
-    setStatus($('bind-status'), '');
+const PLAYER_ID_PATTERN = /^[A-Za-z0-9_.-]{3,36}$/;
+
+function setStep(step) {
+  for (let i = 1; i <= 3; i += 1) {
+    const element = $(`step-${i}`);
+    if (!element) continue;
+    element.classList.toggle('active', i === step);
+    element.classList.toggle('done', i < step);
   }
 }
 
-async function requestCode() {
-  const email = $('bind-email').value.trim();
-  const qq = $('bind-qq').value.trim();
-  if (!state.ticketToken) {
-    setStatus($('bind-status'), '绑定链接缺失，请重新进入服务器获取。', 'error');
+function resetBinding() {
+  state.playerId = '';
+  state.lookup = null;
+  state.requestToken = '';
+  clearInterval(state.cooldownTimer);
+  $('bind-form').classList.remove('hidden');
+  $('bind-identity').classList.add('hidden');
+  $('code-request-form').classList.add('hidden');
+  $('code-form').classList.add('hidden');
+  $('bind-success').classList.add('hidden');
+  $('bind-notice').classList.add('hidden');
+  $('reset-bind').classList.add('hidden');
+  $('resend-code').classList.add('hidden');
+  $('bind-email').disabled = false;
+  $('send-code').classList.remove('hidden');
+  $('send-code').disabled = false;
+  $('bind-player-id').disabled = false;
+  $('bind-player-id').focus();
+  $('bind-avatar').hidden = true;
+  $('bind-avatar-fallback').textContent = '?';
+  $('bind-avatar-fallback').classList.remove('hidden');
+  setStatus($('bind-status'), '');
+  setStep(1);
+}
+
+async function lookupPlayer(rawId) {
+  const playerId = String(rawId || '').trim();
+  if (!PLAYER_ID_PATTERN.test(playerId)) {
+    setStatus($('bind-status'), '请输入 3-36 位账号 ID（UUID、XUID 或游戏名）。', 'error');
     return;
   }
-  if (!email || !qq) {
-    setStatus($('bind-status'), '请填写邮箱与 QQ 号。', 'error');
+  $('lookup-button').disabled = true;
+  setStatus($('bind-status'), '正在匹配账号……');
+  try {
+    const data = await api(`/api/public/lookup?id=${encodeURIComponent(playerId)}`);
+    state.playerId = data.playerId;
+    state.lookup = data;
+    $('bind-player-id').value = data.playerId;
+    $('bind-player-id').disabled = true;
+    $('bind-player').textContent = data.playerName || '未知玩家';
+    // The mailbox is decided by the server: always <ID>@qq.com.
+    $('bind-mailbox').textContent = data.email || `${data.playerId}@qq.com`;
+    $('bind-state').textContent = data.bound ? '已绑定' : '未绑定';
+    $('bind-state').className = data.bound ? 'ok' : '';
+    renderAvatar(data);
+    $('bind-identity').classList.remove('hidden');
+    $('reset-bind').classList.remove('hidden');
+    setStep(2);
+    if (data.bound) {
+      $('code-request-form').classList.add('hidden');
+      $('code-form').classList.add('hidden');
+      $('bind-notice-text').textContent =
+        `该账号已绑定 ${data.boundEmail || '的邮箱'}，无需重复操作。如非本人绑定，请联系管理员解绑。`;
+      $('bind-notice').classList.remove('hidden');
+      setStatus($('bind-status'), '');
+      return;
+    }
+    $('bind-notice').classList.add('hidden');
+    $('bind-email').value = data.email || `${data.playerId}@qq.com`;
+    $('email-hint').textContent =
+      `验证码将发送至 ${$('bind-email').value}；该邮箱由 ID 自动生成，不能修改。`;
+    $('code-request-form').classList.remove('hidden');
+    setStatus($('bind-status'), '账号匹配成功，请获取验证码。', 'ok');
+  } catch (error) {
+    setStatus($('bind-status'), error.message, 'error');
+  } finally {
+    $('lookup-button').disabled = false;
+  }
+}
+
+function renderAvatar(data) {
+  const image = $('bind-avatar');
+  const fallback = $('bind-avatar-fallback');
+  const url = data && data.showAvatars !== false ? (data.avatarUrl || '') : '';
+  const initial = ((data && data.playerName) || data && data.playerId || '?').charAt(0).toUpperCase();
+  fallback.textContent = initial;
+  fallback.classList.remove('hidden');
+  image.hidden = true;
+  if (!url) {
+    return;
+  }
+  image.onload = () => {
+    fallback.classList.add('hidden');
+    image.hidden = false;
+  };
+  image.onerror = () => {
+    image.hidden = true;
+    fallback.classList.remove('hidden');
+  };
+  image.src = url;
+}
+
+async function requestCode() {
+  if (!state.playerId) {
+    setStatus($('bind-status'), '请先输入并匹配账号 ID。', 'error');
+    return;
+  }
+  const email = $('bind-email').value.trim();
+  if (!email) {
+    setStatus($('bind-status'), '绑定邮箱缺失，请重新匹配账号。', 'error');
     return;
   }
   $('send-code').disabled = true;
@@ -172,16 +244,18 @@ async function requestCode() {
   try {
     const data = await api('/api/public/request-code', {
       method: 'POST',
-      body: { ticket: state.ticketToken, email }
+      body: { playerId: state.playerId, email }
     });
-    state.challengeToken = data.challengeToken;
-    $('code-hint').textContent = `验证码已发送至 ${data.maskedEmail}，${Math.ceil(data.ttlSeconds / 60)} 分钟内有效。`;
+    state.requestToken = data.requestToken;
+    const minutes = Math.max(1, Math.ceil(Number(data.ttlSeconds || 600) / 60));
+    $('code-hint').textContent =
+      `验证码已发送至 ${data.maskedEmail}，${minutes} 分钟内有效。`;
+    setStatus($('bind-status'), '验证码已发送，请查收 QQ 邮箱。', 'ok');
     $('code-form').classList.remove('hidden');
     $('bind-email').disabled = true;
-    $('bind-qq').disabled = true;
     $('send-code').classList.add('hidden');
-    $('reset-code').classList.remove('hidden');
-    setStatus($('bind-status'), '验证码已发送，请查收邮箱。', 'ok');
+    $('resend-code').classList.remove('hidden');
+    setStep(3);
     startResendCooldown(Math.max(0, Number(data.cooldownSeconds) || 0));
     $('bind-code').focus();
   } catch (error) {
@@ -190,10 +264,34 @@ async function requestCode() {
   }
 }
 
+async function verifyCode() {
+  const code = $('bind-code').value.trim();
+  if (!state.requestToken) {
+    setStatus($('bind-status'), '验证会话不存在，请重新发送验证码。', 'error');
+    return;
+  }
+  setStatus($('bind-status'), '正在验证……');
+  try {
+    await api('/api/public/verify', {
+      method: 'POST',
+      body: { requestToken: state.requestToken, code }
+    });
+    state.requestToken = '';
+    $('code-request-form').classList.add('hidden');
+    $('code-form').classList.add('hidden');
+    $('reset-bind').classList.add('hidden');
+    $('bind-success').classList.remove('hidden');
+    setStatus($('bind-status'), '');
+    setStep(3);
+  } catch (error) {
+    setStatus($('bind-status'), error.message, 'error');
+  }
+}
+
 function startResendCooldown(seconds) {
   clearInterval(state.cooldownTimer);
   let remaining = seconds;
-  const button = $('reset-code');
+  const button = $('resend-code');
   button.disabled = true;
   button.textContent = `重新发送（${remaining}s）`;
   state.cooldownTimer = setInterval(() => {
@@ -286,8 +384,8 @@ function renderBindings(bindings) {
       </div>
       <dl class="meta">
         <div><dt>身份</dt><dd class="mono">${escapeHtml(binding.identity || '')}</dd></div>
+        <div><dt>ID</dt><dd class="mono">${escapeHtml(binding.playerId || '-')}</dd></div>
         <div><dt>邮箱</dt><dd>${escapeHtml(binding.email || '')}</dd></div>
-        <div><dt>QQ</dt><dd>${escapeHtml(binding.qq || '')}</dd></div>
         <div><dt>验证时间</dt><dd>${formatDate(binding.verifiedAt)}</dd></div>
       </dl>
     </article>`).join('');
@@ -485,7 +583,8 @@ function renderStats(data) {
     ['ipLimit', '单 IP 限制', modules.ipLimitMode ? `模式 ${modules.ipLimitMode}，硬上限 ${modules.ipLimitHardLimit}` : ''],
     ['ban', '封禁模块', modules.ipAssociationAction ? `关联动作 ${modules.ipAssociationAction}` : ''],
     ['bindingGateOperational', '入服拦截', modules.requireBinding ? '已启用 require-binding' : '未要求绑定'],
-    ['smtpOperational', 'SMTP', '连接/认证可用'],
+    ['bindingPage', '绑定页面', modules.bindingUrl ? `${modules.bindingUrl}（邮箱 ${modules.bindingMailboxDomain || '@qq.com'}）` : '已关闭'],
+    ['smtpOperational', 'SMTP', '发送 ID@qq.com 绑定验证码'],
     ['bstats', 'bStats', '匿名统计'],
     ['updateCheck', '自动更新', '异步检查 GitHub Releases'],
     ['floodgate', 'Floodgate', 'XUID 主键'],
@@ -506,14 +605,6 @@ function renderStats(data) {
 /* -------------------------------- wiring -------------------------------- */
 
 document.addEventListener('DOMContentLoaded', () => {
-  const params = new URLSearchParams(location.search);
-  let initialToken = params.get('bind') || '';
-  if (initialToken.length > 256) initialToken = '';
-  if (initialToken) {
-    state.ticketToken = initialToken;
-    history.replaceState(null, '', `${location.pathname}#bind`);
-  }
-
   document.querySelectorAll('.tab').forEach((tab) => {
     tab.addEventListener('click', () => setPage(tab.dataset.page));
   });
@@ -529,36 +620,19 @@ document.addEventListener('DOMContentLoaded', () => {
   });
   $('unlock-form').addEventListener('submit', unlock);
 
-  $('manual-token-form').addEventListener('submit', (event) => {
-    event.preventDefault();
-    loadTicket($('manual-token').value);
-  });
   $('bind-form').addEventListener('submit', (event) => {
+    event.preventDefault();
+    lookupPlayer($('bind-player-id').value);
+  });
+  $('reset-bind').addEventListener('click', resetBinding);
+  $('code-request-form').addEventListener('submit', (event) => {
     event.preventDefault();
     requestCode();
   });
-  $('reset-code').addEventListener('click', () => requestCode());
-  $('code-form').addEventListener('submit', async (event) => {
+  $('resend-code').addEventListener('click', () => requestCode());
+  $('code-form').addEventListener('submit', (event) => {
     event.preventDefault();
-    const code = $('bind-code').value.trim();
-    if (!state.challengeToken) {
-      setStatus($('bind-status'), '验证码会话不存在，请重新发送。', 'error');
-      return;
-    }
-    setStatus($('bind-status'), '正在验证……');
-    try {
-      await api('/api/public/verify', {
-        method: 'POST',
-        body: { challengeToken: state.challengeToken, code, qq: $('bind-qq').value.trim() }
-      });
-      state.challengeToken = '';
-      $('bind-form').classList.add('hidden');
-      $('code-form').classList.add('hidden');
-      $('bind-success').classList.remove('hidden');
-      setStatus($('bind-status'), '');
-    } catch (error) {
-      setStatus($('bind-status'), error.message, 'error');
-    }
+    verifyCode();
   });
 
   $('ban-search-form').addEventListener('submit', (event) => {
@@ -593,12 +667,10 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   const hash = location.hash.replace('#', '');
-  const page = initialToken ? 'bind' : (['bans', 'bindings', 'players', 'stats'].includes(hash) ? hash : 'bind');
+  const page = ['bans', 'bindings', 'players', 'stats'].includes(hash) ? hash : 'bind';
   setPage(page, false);
-  if (state.ticketToken) {
-    loadTicket(state.ticketToken);
-  } else {
-    $('bind-no-token').classList.remove('hidden');
+  if (page === 'bind') {
+    resetBinding();
   }
   $('admin-key').value = state.adminKey;
 });

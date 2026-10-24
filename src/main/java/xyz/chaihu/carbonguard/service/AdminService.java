@@ -35,13 +35,11 @@ import xyz.chaihu.carbonguard.util.TimeUtil;
 public final class AdminService {
     private final DataStore data;
     private final CarbonGuardConfig config;
-    private final BindTicketService tickets;
     private final Semaphore adminSlots;
 
-    public AdminService(DataStore data, CarbonGuardConfig config, BindTicketService tickets) {
+    public AdminService(DataStore data, CarbonGuardConfig config) {
         this.data = data;
         this.config = config;
-        this.tickets = tickets;
         // Leave at least one web-pool connection for the public ticket/binding flow.
         this.adminSlots = new Semaphore(Math.max(1, config.storage().pool().webMaximumSize() - 1), true);
     }
@@ -92,13 +90,14 @@ public final class AdminService {
                     removed = true;
                 }
                 data.verification().deleteForIdentity(connection, candidate);
+                // A pending code must not be able to re-bind the account unbound here.
+                data.codes().consumeForIdentity(connection, candidate, TimeUtil.now());
             }
             return new UnbindResult(removed, keys);
         }).thenApply(result -> {
             if (result.removed()) {
                 for (String candidate : result.keys()) {
                     data.bindingCache().remove(candidate);
-                    tickets.invalidateIdentity(candidate);
                 }
             }
             return result.removed();

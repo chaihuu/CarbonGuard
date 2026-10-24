@@ -23,6 +23,7 @@ package xyz.chaihu.carbonguard.data.model;
 public record BindingView(
         String identityKey,
         String playerName,
+        String playerId,
         String email,
         String qq,
         long verifiedAt,

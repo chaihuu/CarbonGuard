@@ -51,7 +51,7 @@ import xyz.chaihu.carbonguard.config.CarbonGuardConfig;
  * Writes are serialised on one thread to keep SQLite lock contention predictable.</p>
  */
 public final class Database implements AutoCloseable {
-    public static final int SCHEMA_VERSION = 3;
+    public static final int SCHEMA_VERSION = 4;
     /** Bounded to keep a login flood from exhausting heap; callers see a failed future. */
     private static final int WRITE_QUEUE_CAPACITY = 4_096;
     private static final List<String> SCHEMA = List.of(
@@ -63,6 +63,7 @@ public final class Database implements AutoCloseable {
                 observed_xuid TEXT,
                 uuid TEXT NOT NULL,
                 player_name TEXT NOT NULL,
+                player_id TEXT COLLATE NOCASE,
                 identity_source TEXT NOT NULL,
                 first_seen INTEGER NOT NULL,
                 last_seen INTEGER NOT NULL,
@@ -71,6 +72,8 @@ public final class Database implements AutoCloseable {
             """,
             "CREATE INDEX IF NOT EXISTS idx_identities_uuid ON identities(uuid)",
             "CREATE INDEX IF NOT EXISTS idx_identities_name ON identities(player_name COLLATE NOCASE)",
+            "CREATE INDEX IF NOT EXISTS idx_identities_player_id ON identities(player_id COLLATE NOCASE)"
+                    + " WHERE player_id IS NOT NULL",
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_identities_xuid ON identities(xuid) WHERE xuid IS NOT NULL",
             """
             CREATE TABLE IF NOT EXISTS player_profiles (
@@ -90,6 +93,7 @@ public final class Database implements AutoCloseable {
                     REFERENCES identities(identity_key) ON UPDATE CASCADE ON DELETE CASCADE,
                 email TEXT NOT NULL COLLATE NOCASE,
                 qq TEXT NOT NULL,
+                email_key TEXT COLLATE NOCASE,
                 verified_at INTEGER NOT NULL,
                 created_at INTEGER NOT NULL
             )
@@ -298,6 +302,37 @@ public final class Database implements AutoCloseable {
                     statement.execute(ddl);
                 }
             }
+            // v3 -> v4: players now find their account by an ID, so identities store
+            // the player-chosen ID and the code challenges get their own table.
+            addColumnIfMissing(connection, "identities", "player_id", "TEXT COLLATE NOCASE");
+            addColumnIfMissing(connection, "bindings", "email_key", "TEXT COLLATE NOCASE");
+            try (Statement statement = connection.createStatement()) {
+                statement.execute("CREATE INDEX IF NOT EXISTS idx_identities_player_id"
+                        + " ON identities(player_id COLLATE NOCASE) WHERE player_id IS NOT NULL");
+                statement.execute("""
+                        CREATE TABLE IF NOT EXISTS verification_codes (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            request_hash TEXT NOT NULL,
+                            player_id TEXT NOT NULL COLLATE NOCASE,
+                            identity_key TEXT NOT NULL,
+                            player_name TEXT NOT NULL,
+                            email_key TEXT NOT NULL COLLATE NOCASE,
+                            email TEXT NOT NULL COLLATE NOCASE,
+                            code_salt TEXT NOT NULL,
+                            code_hash TEXT NOT NULL,
+                            attempts INTEGER NOT NULL DEFAULT 0,
+                            created_at INTEGER NOT NULL,
+                            expires_at INTEGER NOT NULL,
+                            consumed_at INTEGER NOT NULL DEFAULT 0
+                        )
+                        """);
+                statement.execute("CREATE INDEX IF NOT EXISTS idx_verification_codes_identity"
+                        + " ON verification_codes(identity_key, consumed_at)");
+                statement.execute("CREATE INDEX IF NOT EXISTS idx_verification_codes_email"
+                        + " ON verification_codes(email_key)");
+                statement.execute("CREATE INDEX IF NOT EXISTS idx_verification_codes_expiry"
+                        + " ON verification_codes(expires_at)");
+            }
             try (PreparedStatement ps = connection.prepareStatement(
                     "INSERT INTO schema_meta(k,v) VALUES('version',?) "
                             + "ON CONFLICT(k) DO UPDATE SET v=excluded.v")) {
@@ -305,6 +340,24 @@ public final class Database implements AutoCloseable {
                 ps.executeUpdate();
             }
             logger.info("数据库 schema 已初始化/升级到 v" + SCHEMA_VERSION);
+        }
+    }
+
+    /** Idempotent column addition for databases created by an older schema version. */
+    private static void addColumnIfMissing(Connection connection, String table, String column,
+                                           String definition) throws SQLException {
+        String safeTable = table.replaceAll("[^A-Za-z0-9_]", "");
+        try (Statement statement = connection.createStatement();
+             ResultSet rs = statement.executeQuery("PRAGMA table_info(" + safeTable + ")")) {
+            while (rs.next()) {
+                if (column.equalsIgnoreCase(rs.getString("name"))) {
+                    return;
+                }
+            }
+        }
+        try (Statement statement = connection.createStatement()) {
+            statement.execute("ALTER TABLE " + safeTable + " ADD COLUMN "
+                    + column.replaceAll("[^A-Za-z0-9_]", "") + " " + definition);
         }
     }
 

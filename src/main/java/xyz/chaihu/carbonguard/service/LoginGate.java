@@ -50,7 +50,6 @@ public final class LoginGate {
     private final DataStore data;
     private final SessionRegistry sessions;
     private final AccessPolicy accessPolicy;
-    private final BindTicketService tickets;
     private final Supplier<Messages> messages;
     private final Supplier<CarbonGuardConfig> configSupplier;
     private final BooleanSupplier bindingOperational;
@@ -58,13 +57,12 @@ public final class LoginGate {
     private final Predicate<UUID> bedrock;
 
     public LoginGate(DataStore data, SessionRegistry sessions, AccessPolicy accessPolicy,
-                     BindTicketService tickets, Supplier<Messages> messages,
-                     Supplier<CarbonGuardConfig> configSupplier, BooleanSupplier bindingOperational,
-                     BooleanSupplier bindingMaintenance, Predicate<UUID> bedrock) {
+                     Supplier<Messages> messages, Supplier<CarbonGuardConfig> configSupplier,
+                     BooleanSupplier bindingOperational, BooleanSupplier bindingMaintenance,
+                     Predicate<UUID> bedrock) {
         this.data = data;
         this.sessions = sessions;
         this.accessPolicy = accessPolicy;
-        this.tickets = tickets;
         this.messages = messages;
         this.configSupplier = configSupplier;
         this.bindingOperational = bindingOperational;
@@ -107,16 +105,15 @@ public final class LoginGate {
                         Map.of("player", safe(identity.playerName()))),
                         String.join(";", notes), false);
             }
-            String url = config.web().publicUrl();
-            Optional<BindTicketService.Ticket> ticket = tickets.issue(identity, ip);
-            if (ticket.isPresent()) {
-                url = tickets.urlFor(ticket.get().raw());
-            }
+            // No per-login ticket any more: the player visits the public binding page
+            // and types their ID, so the message only has to carry the URL and the ID.
+            String url = config.binding().url(config.web().publicUrl());
             notes.add("unbound=true");
             return LoginDecision.deny(messages.get().component("kick.unbound", Map.of(
                     "url", url,
                     "player", safe(identity.playerName()),
-                    "identity", safe(identity.displayIdentity())
+                    "identity", safe(identity.displayIdentity()),
+                    "player_id", identity.bindHint()
             )), String.join(";", notes), false);
         }
 

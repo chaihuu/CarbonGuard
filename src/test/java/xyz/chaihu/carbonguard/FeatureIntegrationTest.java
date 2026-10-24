@@ -40,7 +40,6 @@ import xyz.chaihu.carbonguard.data.model.ReviewRecord;
 import xyz.chaihu.carbonguard.data.model.ReviewStatus;
 import xyz.chaihu.carbonguard.data.model.ReviewType;
 import xyz.chaihu.carbonguard.service.AdminService;
-import xyz.chaihu.carbonguard.service.BindTicketService;
 import xyz.chaihu.carbonguard.service.ReviewService;
 import xyz.chaihu.carbonguard.util.TimeUtil;
 
@@ -75,7 +74,7 @@ class FeatureIntegrationTest {
     }
 
     @Test
-    void adminUnbindRemovesBindingAndPendingTickets() throws Exception {
+    void adminUnbindRemovesBindingAndPendingBindRequests() throws Exception {
         CarbonGuardConfig config = TestConfig.create(tempDir.resolve("unbind.db"));
         PlayerIdentity identity = PlayerIdentity.javaPlayer(UUID.randomUUID(), "UnbindMe");
         try (DataStore data = new DataStore(config, Logger.getLogger("carbonguard-unbind-test"))) {
@@ -83,15 +82,13 @@ class FeatureIntegrationTest {
             data.database().write(connection -> {
                 data.identities().upsert(connection, identity, "203.0.113.71", TimeUtil.now());
                 data.bindings().save(connection,
-                        new Binding(identity.key(), "unbind@qq.com", "1234567", TimeUtil.now()),
+                        new Binding(identity.key(), "unbind@qq.com", identity.uuid().toString(), TimeUtil.now()),
                         TimeUtil.now());
             }).get(5, TimeUnit.SECONDS);
             data.refreshCaches();
             assertTrue(data.bindingCache().isBound(identity.key()));
 
-            BindTicketService tickets = new BindTicketService(data, () -> config);
-            tickets.issue(identity, "203.0.113.71");
-            AdminService admin = new AdminService(data, config, tickets);
+            AdminService admin = new AdminService(data, config);
 
             assertTrue(admin.unbind(identity.key(), "test").get(5, TimeUnit.SECONDS));
             assertFalse(data.bindingCache().isBound(identity.key()));

@@ -55,51 +55,59 @@
   <section id="page-bind" class="page" aria-labelledby="bind-title">
     <div class="hero">
       <p class="eyebrow">ACCOUNT BINDING</p>
-      <h1 id="bind-title">验证 QQ 邮箱，绑定游戏身份</h1>
-      <p class="lede">绑定过程使用一次性链接与一次性验证码。验证码 10 分钟失效，成功后不可复用。</p>
+      <h1 id="bind-title">输入 ID，绑定邮箱</h1>
+      <p class="lede">访问 <span class="mono">/bind</span> 后填写你的账号 ID（游戏内 UUID、基岩版 XUID 或 QQ 号），服务器会自动匹配对应账号，并把验证码发送到该 ID 对应的 QQ 邮箱。</p>
     </div>
 
-    <div id="bind-no-token" class="panel hidden">
-      <h2>需要服务器生成的绑定链接</h2>
-      <p class="muted">未完成绑定的玩家会被入服拦截拒绝，踢出消息中包含专属链接。你也可以粘贴链接里的绑定令牌。</p>
-      <form id="manual-token-form" class="inline-form" autocomplete="off">
-        <label class="sr-only" for="manual-token">绑定令牌</label>
-        <input id="manual-token" type="text" maxlength="256" placeholder="粘贴绑定令牌" required autocomplete="off">
-        <button class="primary" type="submit">继续</button>
-      </form>
-      <p id="bind-error" class="status" role="status" aria-live="polite"></p>
-    </div>
-
-    <div id="bind-ticket" class="panel hidden">
-      <div class="identity-card">
-        <div>
-          <span class="label">待绑定玩家</span>
-          <strong id="bind-player">—</strong>
-        </div>
-        <div>
-          <span class="label">链接有效期</span>
-          <strong id="bind-expiry">—</strong>
-        </div>
-        <div>
-          <span class="label">身份类型</span>
-          <strong id="bind-identity-type">—</strong>
-        </div>
-      </div>
+    <div id="bind-wizard" class="panel">
+      <ol class="steps" aria-label="绑定步骤">
+        <li id="step-1" class="step active">输入 ID</li>
+        <li id="step-2" class="step">确认账号</li>
+        <li id="step-3" class="step">验证邮箱</li>
+      </ol>
 
       <form id="bind-form" class="stack" autocomplete="off">
         <div class="field">
-          <label for="bind-email">QQ 邮箱</label>
-          <input id="bind-email" type="email" maxlength="254" placeholder="123456789@qq.com" required>
-          <p id="email-hint" class="hint">仅允许配置中列出的 QQ 邮箱域名。</p>
+          <label for="bind-player-id">账号 ID</label>
+          <input id="bind-player-id" type="text" name="id" minlength="3" maxlength="36"
+                 placeholder="UUID / XUID / 游戏名" required autocomplete="off" spellcheck="false">
+          <p id="id-hint" class="hint">UUID 可在游戏内输入 <span class="mono">/uuid</span> 命令查看；基岩版填 XUID。</p>
         </div>
+        <div class="actions">
+          <button id="lookup-button" class="primary" type="submit">查询并匹配账号</button>
+          <button id="reset-bind" class="ghost hidden" type="button">重新输入</button>
+        </div>
+      </form>
+
+      <div id="bind-identity" class="identity-card hidden">
+        <div class="avatar-cell">
+          <img id="bind-avatar" class="avatar" alt="" width="64" height="64" referrerpolicy="no-referrer"
+               crossorigin="anonymous" hidden>
+          <div class="avatar-fallback" id="bind-avatar-fallback" aria-hidden="true">?</div>
+        </div>
+        <div>
+          <span class="label">已匹配玩家</span>
+          <strong id="bind-player">—</strong>
+        </div>
+        <div>
+          <span class="label">绑定邮箱</span>
+          <strong id="bind-mailbox" class="mono">—</strong>
+        </div>
+        <div>
+          <span class="label">绑定状态</span>
+          <strong id="bind-state">—</strong>
+        </div>
+      </div>
+
+      <form id="code-request-form" class="stack hidden" autocomplete="off">
         <div class="field">
-          <label for="bind-qq">QQ 号</label>
-          <input id="bind-qq" type="text" inputmode="numeric" pattern="[1-9][0-9]{4,11}"
-                 maxlength="12" placeholder="5-12 位 QQ 号" required>
+          <label for="bind-email">绑定邮箱（固定为 ID@qq.com）</label>
+          <input id="bind-email" type="email" maxlength="254" readonly>
+          <p id="email-hint" class="hint">验证码只会发送到该 QQ 号对应的 QQ 邮箱。</p>
         </div>
         <div class="actions">
           <button id="send-code" class="primary" type="submit">发送验证码</button>
-          <button id="reset-code" class="ghost hidden" type="button">重新发送</button>
+          <button id="resend-code" class="ghost hidden" type="button">重新发送</button>
         </div>
       </form>
 
@@ -118,6 +126,10 @@
       <div id="bind-success" class="success hidden" role="status">
         <strong>绑定完成</strong>
         <p>请重新连接服务器。若服务器仍提示未绑定，请等待几秒后重试。</p>
+      </div>
+      <div id="bind-notice" class="success hidden" role="status">
+        <strong>该账号已绑定</strong>
+        <p id="bind-notice-text">无需重复操作。如非本人绑定，请联系管理员解绑。</p>
       </div>
       <p id="bind-status" class="status" role="status" aria-live="polite"></p>
     </div>
@@ -164,14 +176,14 @@
     <div class="hero compact">
       <p class="eyebrow">BINDINGS</p>
       <h1 id="bindings-title">邮箱绑定管理</h1>
-      <p class="lede">按玩家名、XUID、UUID 或邮箱查询绑定；解除绑定后玩家需要重新验证 QQ 邮箱。</p>
+      <p class="lede">按玩家名、ID、XUID、UUID 或邮箱查询绑定；解除绑定后玩家需要在 /bind 页面重新验证。</p>
     </div>
 
     <div id="bindings-content" class="admin-content hidden">
       <div class="panel">
         <form id="binding-search-form" class="inline-form" autocomplete="off">
           <label class="sr-only" for="binding-query">查询</label>
-          <input id="binding-query" type="search" maxlength="100" placeholder="玩家名 / XUID / UUID / 邮箱 / QQ">
+          <input id="binding-query" type="search" maxlength="100" placeholder="玩家名 / ID / XUID / UUID / 邮箱">
           <button class="primary" type="submit">查询</button>
         </form>
         <p id="bindings-status" class="status" role="status" aria-live="polite"></p>
@@ -198,7 +210,7 @@
       <div class="panel">
         <form id="player-search-form" class="inline-form" autocomplete="off">
           <label class="sr-only" for="player-query">查询</label>
-          <input id="player-query" type="search" maxlength="100" placeholder="玩家名 / XUID / UUID / 邮箱 / QQ">
+          <input id="player-query" type="search" maxlength="100" placeholder="玩家名 / ID / XUID / UUID / 邮箱">
           <button class="primary" type="submit">查询</button>
         </form>
         <p id="players-status" class="status" role="status" aria-live="polite"></p>

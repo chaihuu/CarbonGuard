@@ -35,6 +35,14 @@ public final class TestConfig {
     }
 
     public static CarbonGuardConfig create(Path database, boolean requireBinding) {
+        CarbonGuardConfig base = createWithBinding(database, requireBinding,
+                new CarbonGuardConfig.Binding(true, "/bind", true));
+        return base;
+    }
+
+    /** Variant with an explicit binding configuration, used by the /bind flow tests. */
+    public static CarbonGuardConfig createWithBinding(Path database, boolean requireBinding,
+                                                      CarbonGuardConfig.Binding binding) {
         return new CarbonGuardConfig(
                 1,
                 false,
@@ -44,9 +52,10 @@ public final class TestConfig {
                         new CarbonGuardConfig.Ban.IpAssociation(true, IpAssociationAction.PENDING_REVIEW, 168)),
                 new CarbonGuardConfig.Web(true, "127.0.0.1", 9981, "https://cg.example.com",
                         "test-admin-key-with-enough-entropy-123", 120, 12, false),
+                binding,
                 new CarbonGuardConfig.Smtp(true, "smtp.qq.com", 587, "bot@qq.com", "auth-code",
                         "bot@qq.com", false, 10_000),
-                new CarbonGuardConfig.EmailVerify(true, requireBinding, 600, 1_800, 5, 60,
+                new CarbonGuardConfig.EmailVerify(true, requireBinding, 600, 5, 60,
                         true, List.of("qq.com", "vip.qq.com", "foxmail.com")),
                 new CarbonGuardConfig.Stats(true, 30),
                 new CarbonGuardConfig.Review(168),
@@ -62,8 +71,8 @@ public final class TestConfig {
     public static CarbonGuardConfig createWithBedrockExemption(Path database) {
         CarbonGuardConfig base = create(database, false);
         return new CarbonGuardConfig(base.configVersion(), base.debug(), base.storage(),
-                ipLimit(false, List.of(), List.of()), base.ban(), base.web(), base.smtp(),
-                base.emailVerify(), base.stats(), base.review(), base.bstats(),
+                ipLimit(false, List.of(), List.of()), base.ban(), base.web(), base.binding(),
+                base.smtp(), base.emailVerify(), base.stats(), base.review(), base.bstats(),
                 base.updateCheck(), base.players(), base.whitelist());
     }
 

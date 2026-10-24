@@ -35,6 +35,7 @@ public final class AuthException extends RuntimeException {
     public enum AuthError {
         INVALID_REQUEST(400),
         INVALID_TICKET(400),
+        ACCOUNT_NOT_FOUND(404),
         ALREADY_BOUND(409),
         INVALID_EMAIL(400),
         EMAIL_NOT_ALLOWED(400),

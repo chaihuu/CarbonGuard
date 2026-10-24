@@ -23,6 +23,7 @@ package xyz.chaihu.carbonguard.config;
 import java.nio.file.Path;
 import java.net.URI;
 import java.util.List;
+import java.util.Locale;
 import xyz.chaihu.carbonguard.util.IpUtil;
 
 /**
@@ -39,6 +40,7 @@ public record CarbonGuardConfig(
         IpLimit ipLimit,
         Ban ban,
         Web web,
+        Binding binding,
         Smtp smtp,
         EmailVerify emailVerify,
         Stats stats,
@@ -48,6 +50,9 @@ public record CarbonGuardConfig(
         Players players,
         Whitelist whitelist
 ) {
+    /** Schema revision of the shipped {@code config.yml}; migrated automatically on load. */
+    public static final int CONFIG_VERSION = 2;
+
     public record Storage(Path sqliteFile, Pool pool) {
     }
 
@@ -147,6 +152,58 @@ public record CarbonGuardConfig(
         }
     }
 
+    /**
+     * Public player-initiated binding page.
+     *
+     * <p>The player opens {@link #verifyUrlPath()} on the domain that hosts the panel
+     * (for example {@code https://example.com/bind}), types the ID of the account they
+     * own, and the server matches it to the recorded UUID/XUID itself. There is no
+     * per-login ticket any more, so the account lookup must always be explicit.</p>
+     *
+     * <p>The e-mail is never free-form: it is always {@code <ID>@qq.com}. The domain
+     * comes from {@link #qqMailDomain()}, so a player can only bind the QQ mailbox that
+     * belongs to the ID they typed.</p>
+     */
+    public record Binding(
+            boolean enable,
+            String verifyPath,
+            boolean showAvatars
+    ) {
+        /** The only mailbox domain accepted by the binding page. */
+        public static final String QQ_MAIL_DOMAIN = "@qq.com";
+
+        /** Player-facing binding URL built from the configured public panel URL. */
+        public String url(String publicUrl) {
+            String base = publicUrl == null ? "" : publicUrl.replaceAll("/+$", "");
+            return base + verifyPath;
+        }
+
+        /** Canonical QQ mailbox for an ID, for example {@code 12345678@qq.com}. */
+        public static String qqMailbox(String playerId) {
+            String id = playerId == null ? "" : playerId.trim().toLowerCase(Locale.ROOT);
+            return id + QQ_MAIL_DOMAIN;
+        }
+
+        public static String qqMailLocalPart(String email) {
+            String value = email == null ? "" : email.trim().toLowerCase(Locale.ROOT);
+            int at = value.lastIndexOf('@');
+            return at <= 0 ? "" : value.substring(0, at);
+        }
+
+        public static boolean isQqMailbox(String email) {
+            String value = email == null ? "" : email.trim().toLowerCase(Locale.ROOT);
+            return value.endsWith(QQ_MAIL_DOMAIN) && value.length() > QQ_MAIL_DOMAIN.length();
+        }
+
+        public static String qqAvatarUrl(String playerId) {
+            String id = playerId == null ? "" : playerId.trim();
+            if (id.isEmpty() || !id.chars().allMatch(Character::isDigit)) {
+                return "";
+            }
+            return "https://q1.qlogo.cn/g?b=qq&nk=" + id + "&s=100";
+        }
+    }
+
     public record Smtp(
             boolean enable,
             String host,
@@ -178,7 +235,6 @@ public record CarbonGuardConfig(
             boolean enable,
             boolean requireBinding,
             int codeTtlSeconds,
-            int ticketTtlSeconds,
             int maxAttempts,
             int requestCooldownSeconds,
             boolean requireQqEmail,

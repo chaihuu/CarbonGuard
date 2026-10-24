@@ -125,8 +125,8 @@ public final class CarbonGuardCommand implements TabExecutor {
                     String banText = activeBan != null && activeBan.isPresent()
                             ? "#" + activeBan.get().id() + " " + activeBan.get().reason()
                             : "无";
-                    String bindingText = binding == null ? "未绑定" :
-                            binding.email() + " / QQ " + binding.qq();
+                    String bindingText = binding == null ? "未绑定"
+                            : binding.email() + " / ID " + binding.qq();
                     String ip = plugin.data().sessions().ipOf(identity.uuid()).orElse("-");
                     String profileText = PlayerService.describe(profile);
                     sync(() -> sender.sendMessage(plugin.messages().component("command.status-player", Map.of(

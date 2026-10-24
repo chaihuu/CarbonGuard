@@ -36,8 +36,8 @@ import java.util.regex.Pattern;
 import xyz.chaihu.carbonguard.config.CarbonGuardConfig;
 import xyz.chaihu.carbonguard.data.DataStore;
 import xyz.chaihu.carbonguard.data.model.Binding;
-import xyz.chaihu.carbonguard.data.model.EmailChallenge;
 import xyz.chaihu.carbonguard.data.model.PlayerIdentity;
+import xyz.chaihu.carbonguard.data.model.VerificationCode;
 import xyz.chaihu.carbonguard.mail.MailSender;
 import xyz.chaihu.carbonguard.mail.MailService;
 import xyz.chaihu.carbonguard.service.AuthException.AuthError;
@@ -45,47 +45,95 @@ import xyz.chaihu.carbonguard.util.TimeUtil;
 import xyz.chaihu.carbonguard.util.Tokens;
 
 /**
- * Public e-mail verification and QQ binding flow.
+ * Player-initiated binding on the public {@code /bind} page.
  *
- * <p>The ticket proves control of the in-game identity, the e-mail code proves control
- * of the mailbox, and the challenge token is single-use. A successful code comparison
- * immediately consumes the challenge inside the same transaction that writes the
- * binding.</p>
+ * <p>The player types an account ID (Bukkit UUID, Bedrock XUID, or the last seen
+ * player name); {@link #lookup} resolves it to exactly one recorded identity, so the
+ * server matches the UUID itself. A one-time e-mail code is then sent to the mailbox
+ * whose local part equals the typed ID, which proves the visitor controls the
+ * mailbox the account is bound to.</p>
+ *
+ * <p>The browser only holds an opaque request token; the code is stored as
+ * PBKDF2-HMAC-SHA256 and is consumed inside the same transaction that writes the
+ * binding, so it can never be replayed.</p>
  */
 public final class AuthService {
-    private static final Pattern EMAIL = Pattern.compile("^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,190}\\.[A-Za-z]{2,}$");
-    private static final Pattern QQ = Pattern.compile("^[1-9][0-9]{4,11}$");
+    /** Accepted IDs: XUID, dashed/compact UUID, or a Java player name. */
+    private static final Pattern PLAYER_ID = Pattern.compile("^[A-Za-z0-9_.-]{3,36}$");
+    private static final Pattern XUID = Pattern.compile("^[1-9][0-9]{5,19}$");
+
     private final DataStore data;
-    private final BindTicketService tickets;
     private final MailSender mail;
     private final Supplier<CarbonGuardConfig> configSupplier;
     private final Logger logger;
+    /** Per (identity, ID) resend cooldown, reserved before the e-mail is sent. */
     private final Map<String, Long> cooldownUntil = new ConcurrentHashMap<>();
 
-    public AuthService(DataStore data, BindTicketService tickets, MailSender mail,
-                       Supplier<CarbonGuardConfig> configSupplier, Logger logger) {
+    public AuthService(DataStore data, MailSender mail, Supplier<CarbonGuardConfig> configSupplier,
+                       Logger logger) {
         this.data = data;
-        this.tickets = tickets;
         this.mail = mail;
         this.configSupplier = configSupplier;
         this.logger = logger;
     }
 
-    public CompletableFuture<ChallengeIssued> requestCode(String rawTicket, String rawEmail) {
-        Optional<BindTicketService.Ticket> optional = tickets.find(rawTicket);
-        if (optional.isEmpty()) {
-            return failed(new AuthException(AuthError.INVALID_TICKET, "绑定链接无效或已过期，请重新进入服务器获取新链接。"));
-        }
-        BindTicketService.Ticket ticket = optional.get();
-        CarbonGuardConfig config = configSupplier.get();
-        if (isBound(ticket.identity())) {
-            return failed(new AuthException(AuthError.ALREADY_BOUND, "该身份已经完成绑定。"));
-        }
-        String email;
+    /**
+     * Resolves the ID typed on the {@code /bind} page.
+     *
+     * <p>Only identity facts are returned: no IPs, e-mail or ban data, because this
+     * endpoint is public. Every request is rate limited by the API layer, so the
+     * lookup cannot be used to walk the identity space quickly.</p>
+     */
+    public CompletableFuture<Lookup> lookup(String rawPlayerId) {
+        String playerId;
         try {
-            email = normalizeEmail(rawEmail, config);
+            playerId = normalizePlayerId(rawPlayerId);
         } catch (AuthException e) {
             return failed(e);
+        }
+        CarbonGuardConfig config = configSupplier.get();
+        return data.database().webAsync(connection -> {
+            Optional<PlayerIdentity> optional = data.identities().findByPlayerId(connection, playerId);
+            boolean bound = false;
+            String boundAs = "";
+            if (optional.isPresent()) {
+                for (String key : optional.get().lookupKeys()) {
+                    Optional<Binding> binding = data.bindings().find(connection, key);
+                    if (binding.isPresent()) {
+                        bound = true;
+                        boundAs = binding.get().email();
+                        break;
+                    }
+                }
+            }
+            return new Lookup(playerId, optional.map(PlayerIdentity::playerName).orElse(""),
+                    optional.map(PlayerIdentity::uuid).map(java.util.UUID::toString).orElse(""),
+                    optional.map(PlayerIdentity::effectiveXuid).orElse(""),
+                    bound, boundAs, CarbonGuardConfig.Binding.qqMailbox(playerId),
+                    CarbonGuardConfig.Binding.qqAvatarUrl(playerId), config.binding());
+        }).exceptionallyCompose(error -> failed(unwrapAuth(error)));
+    }
+
+    /**
+     * Sends a one-time code to the mailbox belonging to the typed ID.
+     *
+     * <p>The address is never taken from the browser: it is always
+     * {@link CarbonGuardConfig.Binding#qqMailbox(String) ID@qq.com}. {@code requestedEmail}
+     * is accepted only so the page can show a clear error when a visitor typed a
+     * different mailbox; anything else is ignored.</p>
+     */
+    public CompletableFuture<ChallengeIssued> requestCode(String rawPlayerId, String requestedEmail) {
+        String playerId;
+        try {
+            playerId = normalizePlayerId(rawPlayerId);
+        } catch (AuthException e) {
+            return failed(e);
+        }
+        CarbonGuardConfig config = configSupplier.get();
+        String mailbox = CarbonGuardConfig.Binding.qqMailbox(playerId);
+        if (!requestedEmail.isBlank() && !requestedEmail.equalsIgnoreCase(mailbox)) {
+            return failed(new AuthException(AuthError.INVALID_EMAIL,
+                    "绑定邮箱固定为 " + mailbox + "，请输入正确的 QQ 号。"));
         }
         if (!mail.available()) {
             return failed(new AuthException(AuthError.SMTP_UNAVAILABLE, "邮件服务暂不可用，请联系管理员。"));
@@ -94,92 +142,92 @@ public final class AuthService {
         if (cooldownUntil.size() > 10_000) {
             cooldownUntil.entrySet().removeIf(entry -> entry.getValue() <= now);
         }
-        long[] activeCooldown = {0L};
         int cooldownSeconds = config.emailVerify().requestCooldownSeconds();
-        cooldownUntil.compute(ticket.identity().key(), (key, existing) -> {
+        String cooldownKey = playerId.toLowerCase(Locale.ROOT);
+        long[] active = {0L};
+        cooldownUntil.compute(cooldownKey, (key, existing) -> {
             if (existing != null && existing > now) {
-                activeCooldown[0] = existing;
+                active[0] = existing;
                 return existing;
             }
-            activeCooldown[0] = 0L;
-            // Reserve the slot before sending. Without this, concurrent requests can
-            // both pass the check and send multiple e-mails.
+            active[0] = 0L;
+            // Reserve the slot before sending so concurrent requests cannot both send.
             return now + cooldownSeconds * 1_000L;
         });
-        if (activeCooldown[0] > now) {
-            long seconds = Math.max(1, (activeCooldown[0] - now + 999) / 1_000);
+        if (active[0] > now) {
+            long seconds = Math.max(1, (active[0] - now + 999) / 1_000);
             return failed(new AuthException(AuthError.COOLDOWN, "请求过于频繁，请在 " + seconds + " 秒后重试。"));
         }
 
-        String challengeRaw = Tokens.random(32);
-        String challengeHash = Tokens.sha256(challengeRaw);
-        byte[] saltBytes = Tokens.randomBytes(16);
-        String salt = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(saltBytes);
+        String requestRaw = Tokens.random(32);
+        String requestHash = Tokens.sha256(requestRaw);
         String code = Tokens.sixDigitCode();
-        String codeHash = Tokens.codeHash(code, saltBytes);
-        long expiresAt = now + config.emailVerify().codeTtlSeconds() * 1_000L;
-        EmailChallenge challenge = new EmailChallenge(challengeHash, ticket.hash(), ticket.identity().key(),
-                ticket.identity().playerName(), email, salt, codeHash, 0, now, expiresAt, 0);
 
-        CompletableFuture<Void> insert = data.database().writeTransaction(connection -> {
-            for (String key : ticket.identity().lookupKeys()) {
-                if (data.bindings().find(connection, key).isPresent()) {
-                    throw new AuthException(AuthError.ALREADY_BOUND, "该身份已经完成绑定。");
-                }
-            }
-            if (data.bindings().emailTaken(connection, email, ticket.identity().key())) {
-                throw new AuthException(AuthError.EMAIL_TAKEN, "该邮箱已绑定其他游戏账号。");
-            }
-            data.identities().upsert(connection, ticket.identity(), ticket.ip(), now);
-            data.verification().insertChallenge(connection, challenge);
-            return null;
-        });
-
-        return insert.thenCompose(ignored ->
-                        mail.sendVerification(email, ticket.identity().playerName(), code,
-                                        config.emailVerify().codeTtlSeconds())
-                                .handle((sent, error) -> {
-                                    if (error != null) {
-                                        data.database().write(connection ->
-                                                data.verification().deleteChallenge(connection, challengeHash));
-                                        throw new CompletionException(new AuthException(AuthError.SMTP_FAILED,
-                                                "验证码邮件发送失败，请稍后重试或联系管理员。"));
-                                    }
-                                    return new ChallengeIssued(challengeRaw, expiresAt,
-                                            MailService.maskEmail(email), config.emailVerify().codeTtlSeconds(),
-                                            config.emailVerify().requestCooldownSeconds());
-                                }))
+        return data.database().webAsync(connection ->
+                        data.identities().findByPlayerId(connection, playerId))
+                .thenCompose(found -> {
+                    if (found.isEmpty()) {
+                        return failed(new AuthException(AuthError.ACCOUNT_NOT_FOUND,
+                                "没有找到该 ID 对应的账号，请先进入过一次服务器。"));
+                    }
+                    // The request is re-validated against the database inside the
+                    // transaction: another window may have bound the account meanwhile.
+                    PlayerIdentity identity = found.get();
+                    String emailKey = playerId.toLowerCase(Locale.ROOT);
+                    long expiresAt = now + config.emailVerify().codeTtlSeconds() * 1_000L;
+                    byte[] saltBytes = Tokens.randomBytes(16);
+                    String salt = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(saltBytes);
+                    String codeHash = Tokens.codeHash(code, saltBytes);
+                    VerificationCode record = new VerificationCode(0L, requestHash, playerId,
+                            identity.key(), identity.playerName(), emailKey, mailbox, salt, codeHash,
+                            0, now, expiresAt, 0);
+                    CompletableFuture<Long> insert = data.database().writeTransaction(
+                            connection -> insertInTransaction(connection, identity, record, now));
+                    return insert.thenCompose(id ->
+                            mail.sendVerification(mailbox, identity.playerName(), code,
+                                            config.emailVerify().codeTtlSeconds())
+                                    .handle((sent, error) -> {
+                                        if (error != null) {
+                                            // The queued delete is best effort; the code expires anyway.
+                                            data.database().write(connection ->
+                                                    data.codes().deleteById(connection, id));
+                                            throw new CompletionException(new AuthException(AuthError.SMTP_FAILED,
+                                                    "验证码邮件发送失败，请稍后重试或联系管理员。"));
+                                        }
+                                        return issued(requestRaw, MailService.maskEmail(mailbox),
+                                                expiresAt, config);
+                                    }));
+                })
                 .exceptionallyCompose(error -> {
-                    // A failed attempt must not keep the identity in cooldown.
-                    cooldownUntil.put(ticket.identity().key(), now);
+                    // A failed attempt must not keep the ID in cooldown.
+                    cooldownUntil.put(cooldownKey, now);
                     return failed(unwrapAuth(error));
                 });
     }
 
-    public CompletableFuture<Binding> verify(String rawChallenge, String rawCode, String rawQq) {
-        if (rawChallenge == null || rawChallenge.isBlank()
-                || rawCode == null || !rawCode.trim().matches("\\d{6}")) {
+    /** Verifies the one-time mailbox code and writes the binding. */
+    public CompletableFuture<Binding> verify(String rawRequest, String rawCode) {
+        if (rawRequest == null || rawRequest.isBlank() || rawRequest.length() > 256) {
+            return failed(new AuthException(AuthError.INVALID_REQUEST, "绑定会话不存在，请重新提交。"));
+        }
+        CarbonGuardConfig config = configSupplier.get();
+        String requestHash = Tokens.sha256(rawRequest.trim());
+        String code = rawCode == null ? "" : rawCode.trim();
+        if (!code.matches("\\d{6}")) {
             return failed(new AuthException(AuthError.INVALID_CODE, "请输入 6 位数字验证码。"));
         }
-        String qq = rawQq == null ? "" : rawQq.trim();
-        if (!QQ.matcher(qq).matches()) {
-            return failed(new AuthException(AuthError.INVALID_QQ, "请输入 5-12 位有效 QQ 号。"));
-        }
-        String challengeHash = Tokens.sha256(rawChallenge.trim());
-        String code = rawCode.trim();
-        CarbonGuardConfig config = configSupplier.get();
 
-        Optional<EmailChallenge> preloaded;
+        Optional<VerificationCode> preloaded;
         try {
-            preloaded = data.database().coreNow(connection ->
-                    data.verification().findChallenge(connection, challengeHash));
+            preloaded = data.database().webNow(connection ->
+                    data.codes().findByRequestHash(connection, requestHash));
         } catch (Exception e) {
             return failed(new AuthException(AuthError.INTERNAL, "服务器内部错误，请稍后重试。"));
         }
         if (preloaded.isEmpty()) {
-            return failed(new AuthException(AuthError.CODE_EXPIRED, "验证码不存在或已过期，请重新获取。"));
+            return failed(new AuthException(AuthError.CODE_EXPIRED, "验证会话不存在或已过期，请重新提交。"));
         }
-        EmailChallenge challenge = preloaded.get();
+        VerificationCode challenge = preloaded.get();
         if (!challenge.usable(TimeUtil.now())) {
             return failed(new AuthException(AuthError.CODE_EXPIRED, "验证码已过期，请重新获取。"));
         }
@@ -193,16 +241,16 @@ public final class AuthService {
             logger.log(Level.WARNING, "验证码 PBKDF2 校验失败", e);
             return failed(new AuthException(AuthError.INTERNAL, "服务器内部错误，请稍后重试。"));
         }
+        final String computedHash = computed;
 
         // PBKDF2 is deliberately outside the write transaction: the single SQLite
         // writer must not hold the write lock for ~100ms per verification attempt.
-        return data.database().writeTransaction(connection -> verifyInTransaction(connection, challengeHash,
-                        qq, TimeUtil.now(), computed))
+        return data.database().writeTransaction(connection ->
+                        verifyInTransaction(connection, challenge, computedHash, TimeUtil.now()))
                 .thenApply(attempt -> {
                     if (attempt.status() == VerifyStatus.SUCCESS) {
                         Binding binding = attempt.binding();
                         data.bindingCache().put(binding);
-                        tickets.forget(attempt.ticketHash());
                         return binding;
                     }
                     throw new AuthException(switch (attempt.status()) {
@@ -218,76 +266,97 @@ public final class AuthService {
                 .exceptionallyCompose(error -> failed(unwrapAuth(error)));
     }
 
-    private VerifyAttempt verifyInTransaction(Connection connection, String challengeHash,
-                                              String qq, long now, String computed) throws SQLException {
-        Optional<EmailChallenge> optional = data.verification().findChallenge(connection, challengeHash);
+    /**
+     * Records the request. Creating a new code invalidates every other pending request
+     * for the same identity, so at most one code can ever be pending per account.
+     */
+    private long insertInTransaction(Connection connection, PlayerIdentity identity,
+                                     VerificationCode record, long now) throws SQLException {
+        for (String key : identity.lookupKeys()) {
+            if (data.bindings().find(connection, key).isPresent()) {
+                throw new AuthException(AuthError.ALREADY_BOUND, "该账号已经完成绑定，无需重复操作。");
+            }
+        }
+        if (data.bindings().emailTaken(connection, record.emailKey(), identity.key())) {
+            throw new AuthException(AuthError.ALREADY_BOUND, "该邮箱已绑定其他游戏账号。");
+        }
+        data.codes().consumeForIdentity(connection, identity.key(), now);
+        data.identities().setPlayerId(connection, identity.key(), record.playerId());
+        return data.codes().insert(connection, record);
+    }
+
+    private VerifyAttempt verifyInTransaction(Connection connection, VerificationCode preloaded,
+                                              String computed, long now) throws SQLException {
+        Optional<VerificationCode> optional = data.codes().findActive(connection, preloaded.id(), now);
         if (optional.isEmpty()) {
-            return VerifyAttempt.error(VerifyStatus.EXPIRED, "验证码不存在或已过期，请重新获取。");
+            return VerifyAttempt.error(VerifyStatus.EXPIRED, "验证码已使用或已过期，请重新获取。");
         }
-        EmailChallenge challenge = optional.get();
-        if (!challenge.usable(now)) {
-            return VerifyAttempt.error(VerifyStatus.EXPIRED, "验证码已过期，请重新获取。");
-        }
+        VerificationCode code = optional.get();
         CarbonGuardConfig config = configSupplier.get();
-        if (challenge.attempts() >= config.emailVerify().maxAttempts()) {
-            data.verification().consumeChallenge(connection, challengeHash, now);
+        if (code.attempts() >= config.emailVerify().maxAttempts()) {
+            data.codes().consume(connection, code.id(), now);
             return VerifyAttempt.error(VerifyStatus.TOO_MANY, "尝试次数过多，请重新获取验证码。");
         }
-        if (!Tokens.constantTimeEquals(computed, challenge.codeHash())) {
-            int attempts = data.verification().incrementAttempts(connection, challengeHash);
+        if (!Tokens.constantTimeEquals(computed, code.codeHash())) {
+            int attempts = data.codes().incrementAttempts(connection, code.id());
             if (attempts >= config.emailVerify().maxAttempts()) {
-                data.verification().consumeChallenge(connection, challengeHash, now);
-                return VerifyAttempt.error(VerifyStatus.TOO_MANY,
-                        "验证码错误次数过多，该验证码已失效。");
+                data.codes().consume(connection, code.id(), now);
+                return VerifyAttempt.error(VerifyStatus.TOO_MANY, "验证码错误次数过多，该验证码已失效。");
             }
             int remaining = config.emailVerify().maxAttempts() - attempts;
             return VerifyAttempt.error(VerifyStatus.INVALID, "验证码不正确，还可尝试 " + remaining + " 次。");
         }
-
-        // Code is correct: consume it before any later failure, so it can never be replayed.
-        if (!data.verification().consumeChallenge(connection, challengeHash, now)) {
+        // Correct code: consume first so it can never be replayed, even if a later
+        // check (already bound, e-mail taken) fails.
+        if (!data.codes().consume(connection, code.id(), now)) {
             return VerifyAttempt.error(VerifyStatus.EXPIRED, "验证码已使用，请重新获取。");
         }
-        Optional<PlayerIdentity> identity = data.identities().findByKey(connection, challenge.identityKey());
+        Optional<PlayerIdentity> identity = data.identities().findByKey(connection, code.identityKey());
         if (identity.isEmpty()) {
-            return VerifyAttempt.error(VerifyStatus.IDENTITY_MISSING, "身份记录不存在，请重新进入服务器。");
+            return VerifyAttempt.error(VerifyStatus.IDENTITY_MISSING, "该账号记录已不存在，请重新进入服务器后再试。");
+        }
+        // Re-match the typed ID so a rename between request and verification cannot
+        // silently bind a different account.
+        if (!identity.get().matchId(code.playerId())) {
+            return VerifyAttempt.error(VerifyStatus.IDENTITY_MISSING, "ID 与账号不再匹配，请重新提交。");
         }
         for (String key : identity.get().lookupKeys()) {
             if (data.bindings().find(connection, key).isPresent()) {
-                return VerifyAttempt.error(VerifyStatus.ALREADY_BOUND, "该身份已经完成绑定。");
+                return VerifyAttempt.error(VerifyStatus.ALREADY_BOUND, "该账号已经完成绑定。");
             }
         }
-        if (data.bindings().emailTaken(connection, challenge.email(), challenge.identityKey())) {
-            return VerifyAttempt.error(VerifyStatus.EMAIL_TAKEN, "该邮箱已绑定其他游戏账号，请重新获取验证码。");
+        if (data.bindings().emailTaken(connection, code.emailKey(), code.identityKey())) {
+            return VerifyAttempt.error(VerifyStatus.ALREADY_BOUND, "该邮箱已绑定其他游戏账号。");
         }
-        if (!config.emailVerify().emailAllowed(challenge.email())) {
-            return VerifyAttempt.error(VerifyStatus.EMAIL_TAKEN, "该邮箱域名不在允许列表中。");
+        // Defence in depth: the stored mailbox must still be the QQ mailbox of the
+        // stored ID, even if a row was written by an older release.
+        String expectedMailbox = CarbonGuardConfig.Binding.qqMailbox(code.playerId());
+        if (!CarbonGuardConfig.Binding.isQqMailbox(code.email())
+                || !CarbonGuardConfig.Binding.qqMailLocalPart(code.email()).equalsIgnoreCase(code.playerId())) {
+            logger.warning("绑定请求 " + code.playerId() + " 的邮箱与 ID 不匹配（" + code.email()
+                    + "），已按 " + expectedMailbox + " 重新计算");
         }
         long verifiedAt = TimeUtil.now();
-        Binding binding = new Binding(challenge.identityKey(), challenge.email(), qq, verifiedAt);
+        Binding binding = new Binding(code.identityKey(), expectedMailbox, code.playerId(),
+                code.emailKey(), verifiedAt);
         data.bindings().save(connection, binding, verifiedAt);
-        data.verification().consumeTicket(connection, challenge.ticketHash(), verifiedAt);
-        return new VerifyAttempt(VerifyStatus.SUCCESS, binding, challenge.ticketHash(), 0, "");
+        data.identities().setPlayerId(connection, code.identityKey(), code.playerId());
+        return new VerifyAttempt(VerifyStatus.SUCCESS, binding, 0, "");
     }
 
-    private boolean isBound(PlayerIdentity identity) {
-        for (String key : identity.lookupKeys()) {
-            if (data.bindingCache().isBound(key)) {
-                return true;
-            }
+    public static String normalizePlayerId(String raw) {
+        String value = raw == null ? "" : raw.trim();
+        if (value.length() < 3 || value.length() > 36 || !PLAYER_ID.matcher(value).matches()) {
+            throw new AuthException(AuthError.INVALID_REQUEST,
+                    "请输入 3-36 位账号 ID（游戏内 UUID、基岩版 XUID 或游戏名）。");
         }
-        return false;
+        return value;
     }
 
-    private String normalizeEmail(String raw, CarbonGuardConfig config) {
-        String email = raw == null ? "" : raw.trim().toLowerCase(Locale.ROOT);
-        if (email.length() > 254 || !EMAIL.matcher(email).matches()) {
-            throw new AuthException(AuthError.INVALID_EMAIL, "邮箱格式不正确。");
-        }
-        if (!config.emailVerify().emailAllowed(email)) {
-            throw new AuthException(AuthError.EMAIL_NOT_ALLOWED, "请使用允许的 QQ 邮箱域名。");
-        }
-        return email;
+    private ChallengeIssued issued(String requestToken, String maskedEmail, long expiresAt,
+                                   CarbonGuardConfig config) {
+        return new ChallengeIssued(requestToken, expiresAt, maskedEmail,
+                config.emailVerify().codeTtlSeconds(), config.emailVerify().requestCooldownSeconds());
     }
 
     private static <T> CompletableFuture<T> failed(AuthException error) {
@@ -313,21 +382,35 @@ public final class AuthService {
         }
     }
 
+    public boolean isXuid(String playerId) {
+        return playerId != null && XUID.matcher(playerId.trim()).matches();
+    }
+
     private enum VerifyStatus {
         SUCCESS, INVALID, EXPIRED, TOO_MANY, ALREADY_BOUND, EMAIL_TAKEN, IDENTITY_MISSING
     }
 
-    private record VerifyAttempt(VerifyStatus status, Binding binding, String ticketHash,
-                                 int remaining, String message) {
+    private record VerifyAttempt(VerifyStatus status, Binding binding, int remaining, String message) {
         static VerifyAttempt error(VerifyStatus status, String message) {
-            return new VerifyAttempt(status, null, null, 0, message);
+            return new VerifyAttempt(status, null, 0, message);
         }
     }
 
-    public record ChallengeIssued(String challengeToken, long expiresAt, String maskedEmail,
+    /**
+     * Public view of the resolved account. {@code codeEmail} is the fixed
+     * {@code <ID>@qq.com} mailbox the code goes to and {@code avatarUrl} is the QQ avatar
+     * for numeric IDs, so the visitor can confirm the right account; nothing else about
+     * the account leaves the server.
+     */
+    public record Lookup(String playerId, String playerName, String uuid, String xuid, boolean bound,
+                         String boundEmail, String codeEmail, String avatarUrl,
+                         CarbonGuardConfig.Binding binding) {
+    }
+
+    public record ChallengeIssued(String requestToken, long expiresAt, String maskedEmail,
                                   int ttlSeconds, int cooldownSeconds) {
         public ChallengeIssued {
-            Objects.requireNonNull(challengeToken);
+            Objects.requireNonNull(requestToken);
         }
     }
 }

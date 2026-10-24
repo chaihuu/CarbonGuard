@@ -20,5 +20,17 @@
 
 package xyz.chaihu.carbonguard.data.model;
 
-public record Binding(String identityKey, String email, String qq, long verifiedAt) {
+/**
+ * A verified binding. {@code email} is the display address (for example
+ * {@code 123456@qq.com}) and {@code emailKey} is the normalised ID used by the
+ * verification flow, so both can be checked without a second lookup.
+ */
+public record Binding(String identityKey, String email, String qq, String emailKey, long verifiedAt) {
+    public Binding(String identityKey, String email, String qq, long verifiedAt) {
+        this(identityKey, email, qq, email, verifiedAt);
+    }
+
+    public static String emailKeyOf(String email) {
+        return email == null ? "" : email.trim().toLowerCase(java.util.Locale.ROOT);
+    }
 }

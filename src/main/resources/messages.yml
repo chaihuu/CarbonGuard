@@ -28,10 +28,10 @@ kick:
     &c本次登录已被管理员复核拒绝
     &7如你认为这是共享 IP 误判，请联系管理员说明情况。
   unbound: |-
-    &b请至网页面板验证 QQ 邮箱并绑定 QQ 号
+    &b请打开下面的绑定页面完成邮箱绑定
     &f{url}
-    &7身份: &f{identity}
-    &7验证码 10 分钟内有效，绑定链接也有时效。
+    &7你的 ID: &f{player_id}
+    &7在页面输入上面的 ID，服务器会自动匹配你的账号。
     &7完成后重新连接服务器即可。
   binding-unavailable: |-
     &c绑定验证服务暂时不可用，已拒绝本次登录
@@ -48,7 +48,7 @@ command:
     &7/carbonguard status [玩家] &8- &f查看模块/玩家状态
     &7/carbonguard ban <玩家> [时长] [原因] &8- &f封禁，时长如 7d、12h，省略为永久
     &7/carbonguard unban <玩家|#编号> &8- &f解封并清除关联
-    &7/carbonguard unbind <玩家|xuid:..|uuid:..> &8- &f解除邮箱/QQ 绑定
+    &7/carbonguard unbind <玩家|xuid:..|uuid:..> &8- &f解除邮箱绑定
     &7/carbonguard reload &8- &f重载配置并重启 Web 面板
   status-server: |-
     {prefix}&b运行状态

@@ -42,8 +42,8 @@ public final class HttpSupport {
     public static final int MAX_BODY_BYTES = 16 * 1024;
     public static final Gson GSON = new GsonBuilder().disableHtmlEscaping().create();
     private static final String CSP = "default-src 'none'; script-src 'self'; style-src 'self'; "
-            + "connect-src 'self'; img-src 'self' data:; font-src 'self'; base-uri 'none'; "
-            + "form-action 'self'; frame-ancestors 'none'";
+            + "connect-src 'self'; img-src 'self' data: https://q1.qlogo.cn; font-src 'self'; "
+            + "base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
 
     private HttpSupport() {
     }

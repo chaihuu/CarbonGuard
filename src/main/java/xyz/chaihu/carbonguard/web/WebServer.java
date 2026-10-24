@@ -40,7 +40,8 @@ import xyz.chaihu.carbonguard.CarbonGuardPlugin;
 
 /**
  * Embedded JDK HTTP server. No frontend toolchain and no framework: only the JSON API
- * and four static files are exposed. Bind address defaults to loopback.
+ * and four static files are exposed. The player-facing binding page is served at
+ * {@code /bind}. Bind address defaults to loopback.
  */
 public final class WebServer {
     private static final Map<String, Asset> ASSETS = new HashMap<>();
@@ -109,6 +110,20 @@ public final class WebServer {
             return;
         }
         String path = exchange.getRequestURI().getPath();
+        String rawQuery = exchange.getRequestURI().getRawQuery();
+        if (path.equals("/bind") || path.equals("/bind/")) {
+            // The public binding page is the same single-page app; it opens the
+            // "bind" tab by default and asks for the player ID.
+            if (rawQuery == null || rawQuery.isBlank()) {
+                redirect(exchange, "/#bind");
+                return;
+            }
+        } else if (path.equals("/") && rawQuery != null && rawQuery.startsWith("bind=")) {
+            // Legacy ticket links from older kick messages: send the player to the
+            // ID page instead of showing an "invalid link" error.
+            redirect(exchange, "/#bind");
+            return;
+        }
         byte[] bytes = assets.get(path);
         if (bytes == null) {
             HttpSupport.error(exchange, 404, "NOT_FOUND", "页面不存在。");
@@ -125,6 +140,14 @@ public final class WebServer {
         } finally {
             exchange.close();
         }
+    }
+
+    private static void redirect(HttpExchange exchange, String location) throws IOException {
+        HttpSupport.securityHeaders(exchange);
+        exchange.getResponseHeaders().set("Location", location);
+        exchange.getResponseHeaders().set("Cache-Control", "no-store");
+        exchange.sendResponseHeaders(303, -1);
+        exchange.close();
     }
 
     private byte[] readResource(String name) {

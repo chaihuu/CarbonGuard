@@ -20,11 +20,17 @@
 
 package xyz.chaihu.carbonguard.data.model;
 
-public record EmailChallenge(
-        String challengeHash,
-        String ticketHash,
+/**
+ * One e-mail verification code bound to both the player ID the visitor typed and
+ * the resolved identity, so the code cannot be replayed against another account.
+ */
+public record VerificationCode(
+        long id,
+        String requestHash,
+        String playerId,
         String identityKey,
         String playerName,
+        String emailKey,
         String email,
         String codeSalt,
         String codeHash,

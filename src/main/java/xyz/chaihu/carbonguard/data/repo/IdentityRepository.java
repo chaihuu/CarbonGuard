@@ -25,7 +25,9 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import xyz.chaihu.carbonguard.data.model.IdentitySource;
@@ -34,11 +36,17 @@ import xyz.chaihu.carbonguard.data.model.PlayerIdentity;
 import xyz.chaihu.carbonguard.util.TimeUtil;
 
 public final class IdentityRepository {
+    /**
+     * Upper bound for a binding lookup. The identity index is by design small
+     * (only accounts that ever connected), but the query still stops early.
+     */
+    private static final int LOOKUP_SCAN_LIMIT = 20_000;
+
     public void upsert(Connection connection, PlayerIdentity identity, String ip, long now) throws SQLException {
         String sql = """
                 INSERT INTO identities(identity_key, identity_type, xuid, observed_xuid, uuid, player_name,
-                                       identity_source, first_seen, last_seen, last_ip)
-                VALUES(?,?,?,?,?,?,?,?,?,?)
+                                       player_id, identity_source, first_seen, last_seen, last_ip)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(identity_key) DO UPDATE SET
                     identity_type=CASE
                         WHEN identities.identity_type='XUID' OR excluded.identity_type='XUID' THEN 'XUID'
@@ -47,6 +55,7 @@ public final class IdentityRepository {
                     observed_xuid=COALESCE(excluded.observed_xuid, identities.observed_xuid),
                     uuid=excluded.uuid,
                     player_name=excluded.player_name,
+                    player_id=COALESCE(identities.player_id, excluded.player_id),
                     identity_source=CASE
                         WHEN identities.identity_source='FLOODGATE' OR excluded.identity_source='FLOODGATE'
                             THEN 'FLOODGATE'
@@ -63,10 +72,11 @@ public final class IdentityRepository {
             ps.setString(4, identity.observedXuid());
             ps.setString(5, identity.uuid().toString());
             ps.setString(6, identity.playerName());
-            ps.setString(7, identity.source().name());
-            ps.setLong(8, now);
+            ps.setString(7, identity.requestedId());
+            ps.setString(8, identity.source().name());
             ps.setLong(9, now);
-            ps.setString(10, ip);
+            ps.setLong(10, now);
+            ps.setString(11, ip);
             ps.executeUpdate();
         }
     }
@@ -119,9 +129,100 @@ public final class IdentityRepository {
         }
     }
 
+    /** The Bedrock XUID (Floodgate or observed) recorded for an identity key, if any. */
+    public Optional<String> findXuid(Connection connection, String identityKey) throws SQLException {
+        try (PreparedStatement ps = connection.prepareStatement(
+                "SELECT xuid, observed_xuid FROM identities WHERE identity_key=?")) {
+            ps.setString(1, identityKey);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (!rs.next()) {
+                    return Optional.empty();
+                }
+                String xuid = rs.getString(1);
+                if (xuid == null || xuid.isBlank()) {
+                    xuid = rs.getString(2);
+                }
+                return xuid == null || xuid.isBlank() ? Optional.empty() : Optional.of(xuid);
+            }
+        }
+    }
+
+    /**
+     * Resolves the account ID a player typed on the binding page. Inputs that look
+     * like an XUID or a UUID resolve through their indexed columns; anything else is
+     * matched against the last seen player name.
+     *
+     * <p>An exact match wins. If several identities share the same name (a name
+     * change, or an XUID and its UUID fallback), the most recently seen identity is
+     * returned, preferring the canonical Floodgate XUID key.</p>
+     */
+    public Optional<PlayerIdentity> findByPlayerId(Connection connection, String rawId) throws SQLException {
+        if (rawId == null) {
+            return Optional.empty();
+        }
+        String id = rawId.trim();
+        if (id.isEmpty() || id.length() > 64) {
+            return Optional.empty();
+        }
+        UUID uuid = PlayerIdentity.parseUuid(id);
+        if (uuid != null) {
+            Optional<PlayerIdentity> exact = findByUuid(connection, uuid);
+            if (exact.isPresent()) {
+                return exact;
+            }
+        }
+        if (id.chars().allMatch(c -> c >= '0' && c <= '9')) {
+            try (PreparedStatement ps = connection.prepareStatement(selectBase()
+                    + " WHERE xuid=? OR observed_xuid=?"
+                    + " ORDER BY CASE WHEN identity_key LIKE 'xuid:%' THEN 0 ELSE 1 END, last_seen DESC"
+                    + " LIMIT 1")) {
+                ps.setString(1, id);
+                ps.setString(2, id);
+                Optional<PlayerIdentity> byXuid = one(ps);
+                if (byXuid.isPresent()) {
+                    return byXuid;
+                }
+            }
+        }
+        // A bare 32-char hex string may have been stored as a UUID without dashes.
+        if (uuid == null) {
+            UUID compact = PlayerIdentity.parseUuid(id);
+            if (compact != null) {
+                return findByUuid(connection, compact);
+            }
+        }
+        Map<String, PlayerIdentity> byName = new LinkedHashMap<>();
+        try (PreparedStatement ps = connection.prepareStatement(selectBase()
+                + " WHERE player_name=? COLLATE NOCASE"
+                + " ORDER BY CASE WHEN identity_key LIKE 'xuid:%' THEN 0 ELSE 1 END, last_seen DESC"
+                + " LIMIT 8")) {
+            ps.setString(1, id);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    PlayerIdentity identity = map(rs);
+                    byName.putIfAbsent(identity.key(), identity);
+                }
+            }
+        }
+        if (!byName.isEmpty()) {
+            return Optional.of(byName.values().iterator().next());
+        }
+        return Optional.empty();
+    }
+
+    /** Stores the player-chosen binding ID on the resolved identity. */
+    public void setPlayerId(Connection connection, String identityKey, String playerId) throws SQLException {
+        try (PreparedStatement ps = connection.prepareStatement(
+                "UPDATE identities SET player_id=? WHERE identity_key=?")) {
+            ps.setString(1, playerId);
+            ps.setString(2, identityKey);
+            ps.executeUpdate();
+        }
+    }
+
     public List<PlayerIdentity> findAll(Connection connection) throws SQLException {
         List<PlayerIdentity> result = new ArrayList<>();
-        try (PreparedStatement ps = connection.prepareStatement(selectBase());
+        try (PreparedStatement ps = connection.prepareStatement(selectBase() + " LIMIT " + LOOKUP_SCAN_LIMIT);
              ResultSet rs = ps.executeQuery()) {
             while (rs.next()) {
                 result.add(map(rs));
@@ -135,11 +236,13 @@ public final class IdentityRepository {
         String like = "%" + query + "%";
         try (PreparedStatement ps = connection.prepareStatement(selectBase()
                 + " WHERE player_name LIKE ? COLLATE NOCASE OR uuid LIKE ? OR identity_key LIKE ?"
+                + " OR player_id LIKE ? COLLATE NOCASE"
                 + " ORDER BY last_seen DESC LIMIT ?")) {
             ps.setString(1, like);
             ps.setString(2, like);
             ps.setString(3, like);
-            ps.setInt(4, limit);
+            ps.setString(4, like);
+            ps.setInt(5, limit);
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
                     result.add(map(rs));
@@ -177,7 +280,7 @@ public final class IdentityRepository {
     private static String selectBase() {
         return """
                 SELECT identity_key, identity_type, xuid, observed_xuid, uuid, player_name,
-                       identity_source, first_seen, last_seen, last_ip
+                       player_id, identity_source, first_seen, last_seen, last_ip
                 FROM identities
                 """;
     }
@@ -195,6 +298,7 @@ public final class IdentityRepository {
                 rs.getString("player_name"),
                 rs.getString("xuid"),
                 rs.getString("observed_xuid"),
+                rs.getString("player_id"),
                 IdentityType.valueOf(rs.getString("identity_type")),
                 IdentitySource.valueOf(rs.getString("identity_source")),
                 !"JAVA".equals(rs.getString("identity_source"))

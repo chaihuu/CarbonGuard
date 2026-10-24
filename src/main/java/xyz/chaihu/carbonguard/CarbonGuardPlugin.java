@@ -46,7 +46,7 @@ import xyz.chaihu.carbonguard.service.AccessPolicy;
 import xyz.chaihu.carbonguard.service.AdminService;
 import xyz.chaihu.carbonguard.service.AuthService;
 import xyz.chaihu.carbonguard.service.BanService;
-import xyz.chaihu.carbonguard.service.BindTicketService;
+import xyz.chaihu.carbonguard.service.AuthException;
 import xyz.chaihu.carbonguard.service.LoginGate;
 import xyz.chaihu.carbonguard.service.PlayerService;
 import xyz.chaihu.carbonguard.service.ReviewService;
@@ -69,7 +69,6 @@ public final class CarbonGuardPlugin extends JavaPlugin {
     private IdentityResolver identityResolver;
     private AccessPolicy accessPolicy;
     private MailService mailService;
-    private BindTicketService bindTickets;
     private AuthService authService;
     private LoginGate loginGate;
     private BanService banService;
@@ -115,15 +114,14 @@ public final class CarbonGuardPlugin extends JavaPlugin {
 
         this.accessPolicy = new AccessPolicy(this::config);
         this.mailService = new MailService(this::config, getLogger());
-        this.bindTickets = new BindTicketService(data, this::config);
-        this.authService = new AuthService(data, bindTickets, mailService, this::config, getLogger());
+        this.authService = new AuthService(data, mailService, this::config, getLogger());
         this.banService = new BanService(data, this::config);
         this.reviewService = new ReviewService(data, this::config);
-        this.adminService = new AdminService(data, config, bindTickets);
+        this.adminService = new AdminService(data, config);
         this.playerService = new PlayerService(data, this::config, getLogger());
         this.updateService = new UpdateService(this, this::config, getLogger());
         this.loginContexts = new LoginContexts();
-        this.loginGate = new LoginGate(data, data.sessions(), accessPolicy, bindTickets,
+        this.loginGate = new LoginGate(data, data.sessions(), accessPolicy,
                 this::messages, this::config, this::bindingGateOperational, this::bindingGateMaintenance,
                 identityResolver::bedrockOnline);
 
@@ -142,7 +140,7 @@ public final class CarbonGuardPlugin extends JavaPlugin {
         startBStats();
         if (config.emailVerify().enable() && config.emailVerify().requireBinding()
                 && !bindingGateConfigurationComplete()) {
-            getLogger().severe("入服拦截已开启，但 SMTP/Web/管理密钥/public-url 不完整；"
+            getLogger().severe("入服拦截已开启，但 Web/管理密钥/public-url 不完整；"
                     + "为防止锁死服务器，该拦截已自动降级关闭。修复配置后执行 /carbonguard reload。");
         }
         scheduleTasks();
@@ -287,13 +285,15 @@ public final class CarbonGuardPlugin extends JavaPlugin {
         }
     }
 
+    /**
+     * The gate is available as soon as the public binding page can be reached.
+     * SMTP only matters when the binding flow is configured to require a code
+     * ({@code binding.require-email-code}); an unreachable mail relay must not silently
+     * switch admission gating off.
+     */
     public boolean bindingGateOperational() {
-        CarbonGuardConfig current = config;
         WebServer server = webServer;
-        MailService mail = mailService;
         return bindingGateConfigurationComplete()
-                && mail != null
-                && mail.operational()
                 && server != null
                 && server.isRunning();
     }
@@ -303,7 +303,7 @@ public final class CarbonGuardPlugin extends JavaPlugin {
         return current != null
                 && current.emailVerify().enable()
                 && current.emailVerify().requireBinding()
-                && current.smtp().configured()
+                && current.binding().enable()
                 && current.web().enable()
                 && current.web().hasUsableAdminKey()
                 && current.web().hasReachablePublicUrl();
@@ -323,15 +323,14 @@ public final class CarbonGuardPlugin extends JavaPlugin {
             mail.probe().whenComplete((healthy, error) -> {
                 if (error != null) {
                     getLogger().log(Level.WARNING, "SMTP 健康检查异常", error);
-                } else if (Boolean.TRUE.equals(healthy)) {
-                    boolean required = config.emailVerify().enable() && config.emailVerify().requireBinding();
-                    getLogger().info(required
-                            ? "SMTP 可用，入服拦截状态: " + (bindingGateOperational() ? "开启" : "关闭")
-                            : "SMTP 健康检查通过。");
-                } else if (config.emailVerify().enable() && config.emailVerify().requireBinding()) {
-                    getLogger().warning("SMTP 不可用，入服拦截保持关闭。");
+                    return;
+                }
+                if (Boolean.TRUE.equals(healthy)) {
+                    getLogger().info("SMTP 健康检查通过；入服拦截状态: "
+                            + (bindingGateOperational() ? "开启" : "关闭"));
                 } else {
-                    getLogger().info("SMTP 当前不可用（未启用入服拦截，不影响登录）。");
+                    getLogger().warning("SMTP 不可用：未绑定玩家在 " + config.binding().url(config.web().publicUrl())
+                            + " 页面无法收到验证码（已绑定玩家不受影响）。");
                 }
             });
         } catch (Throwable error) {
@@ -352,7 +351,6 @@ public final class CarbonGuardPlugin extends JavaPlugin {
 
         tasks.add(getServer().getScheduler().runTaskTimerAsynchronously(this, () -> {
             data.sessions().cleanup();
-            bindTickets.cleanup();
             WebServer server = webServer;
             if (server != null) {
                 server.cleanupRateLimits();
@@ -425,7 +423,7 @@ public final class CarbonGuardPlugin extends JavaPlugin {
                 && sameWebEndpoint(previous, next);
         config = next;
         messages = nextMessages;
-        adminService = new AdminService(data, config, bindTickets);
+        adminService = new AdminService(data, config);
         data.setRecordStats(next.stats().enable());
         accessPolicy.refresh();
         playerService = new PlayerService(data, this::config, getLogger());
@@ -495,7 +493,11 @@ public final class CarbonGuardPlugin extends JavaPlugin {
         }
         if (config.emailVerify().enable() && config.emailVerify().requireBinding()
                 && !bindingGateOperational()) {
-            warnings.add("入服拦截因 SMTP/Web/密钥/public-url 不完整或 SMTP 不可用而关闭。");
+            warnings.add("入服拦截因 Web/密钥/public-url 不完整或绑定页面未启用而关闭。");
+        }
+        if (config.emailVerify().enable() && config.emailVerify().requireBinding()
+                && !config.smtp().configured()) {
+            warnings.add("SMTP 未配置完整：未绑定玩家无法在绑定页面收到验证码。");
         }
         return new ReloadResult(bindingGateOperational(), webServer != null && webServer.isRunning(),
                 List.copyOf(warnings));
@@ -513,9 +515,6 @@ public final class CarbonGuardPlugin extends JavaPlugin {
         if (webServer != null) {
             webServer.stop();
             webServer = null;
-        }
-        if (bindTickets != null) {
-            bindTickets.clear();
         }
         if (mailService != null) {
             mailService.close();
@@ -588,10 +587,6 @@ public final class CarbonGuardPlugin extends JavaPlugin {
 
     public MailService mailService() {
         return mailService;
-    }
-
-    public BindTicketService bindTicketService() {
-        return bindTickets;
     }
 
     public AuthService authService() {

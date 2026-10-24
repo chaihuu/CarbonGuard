@@ -20,8 +20,8 @@ Paper 26.2 综合管控插件：基岩版真实 IP 接入、XUID 身份、单 IP
 | 身份 | Floodgate 存在时以 XUID 为主键；Geyser 直连且无 Floodgate 时以 UUID 降级并标记 `UUID_FALLBACK`；Java 玩家使用 UUID |
 | 单 IP 限制 | 在线会话 + 正在登录预留计数，支持宽限阈值、IP/CIDR 白名单、玩家白名单、`REJECT` / `WARN_ONLY`；基岩版（Geyser）玩家默认自动豁免 |
 | IP 关联封禁 | 封禁时记录当前与历史 IP，按 `REJECT` / `PENDING_REVIEW` / `LOG_ONLY` 处理；TTL 衰减 |
-| 邮箱绑定 | SMTP 端口可配，465 隐式 SSL / 其他端口 STARTTLS；验证码 10 分钟默认、单次消费、一次性 challenge token |
-| 入服拦截 | 默认开启；未绑定 QQ 邮箱时拒绝登录并展示带一次性 Bearer ticket 的网页面板链接 |
+| 邮箱绑定 | 玩家访问 `http://你的域名/bind` 输入 ID，服务器按 UUID/XUID/游戏名自动匹配账号，显示 QQ 头像，验证码只发往 `<ID>@qq.com` |
+| 入服拦截 | 默认开启；未绑定邮箱时拒绝登录，踢出消息给出 `/bind` 地址与玩家 ID |
 | 玩家数据 | 记录初次加入、绑定时间、最近登录、登录次数、累计游玩时长与最近 IP |
 | Web 面板 | 绑定验证、绑定管理/解绑、封禁查询、玩家数据、统计概览；默认端口 9981 |
 | 复核 | 通过后按 (类型, 身份, IP) 抑制重复待审，可配置有效期 |
@@ -68,20 +68,43 @@ proxies:
 
 ### 2.3 入服拦截（默认开启）
 
-`email-verify.require-binding` 默认是 `true`：未完成 QQ 邮箱绑定的玩家会被拒绝入服，并在踢出消息中拿到一次性绑定链接。
+`email-verify.require-binding` 默认是 `true`：未完成邮箱绑定的玩家会被拒绝入服，踢出消息给出绑定页面地址（默认 `http://你的域名/bind`）与玩家 ID。
 
-要让它真正生效且不误伤，部署前必须一次性满足以下条件：
+要让它真正生效且不误伤，部署前必须满足以下条件：
 
-1. `smtp` 配置完整（host/from，以及 username 有值时 password 不为空）；
-2. 启动时 SMTP 连接/认证健康检查通过；
-3. Web 面板启动成功；
-4. `web.admin-key` 强度达标；
-5. `web.public-url` 是远程可达的非回环地址（建议 HTTPS）；
-6. `email-verify.enable` 为 true。
+1. Web 面板启动成功；
+2. `web.admin-key` 强度达标；
+3. `web.public-url` 是远程可达的非回环地址（建议 HTTPS）；
+4. `email-verify.enable` 与 `binding.enable` 为 true。
 
-任一项缺失时，插件会在启动日志中给出 ERROR，并**自动降级关闭入服拦截**，避免配置错误把全体玩家锁在服务器外。SMTP 中途不可用或连续发送失败时也会关闭拦截。修复后执行 `/carbonguard reload`。
+第 1–4 项缺失时，插件会在启动日志中给出 ERROR，并**自动降级关闭入服拦截**，避免配置错误把全体玩家锁在服务器外；修复后执行 `/carbonguard reload`。
 
-> 首次安装且未填写 `admin-key`/`smtp`/`public-url` 时，拦截会处于“已配置但未生效”的降级状态；`/carbonguard status` 会显示“入服拦截: 关闭”。完成第 3 节配置后重新执行 `/carbonguard reload` 即正式开启。
+SMTP 不再参与拦截开关：绑定页面向 `<ID>@qq.com` 发送验证码，SMTP 不可用时只有未绑定玩家无法获取验证码，**已绑定玩家不受影响**，日志会给出警告。
+
+SMTP 配置（host/from，以及 username 有值时 password 不为空）仍需完整，否则玩家无法完成绑定：
+
+```yaml
+smtp:
+  enable: true
+  host: "smtp.qq.com"
+  port: 587
+  username: "123456789@qq.com"
+  password: "QQ邮箱授权码"
+  from: "123456789@qq.com"
+```
+
+> 首次安装且未填写 `admin-key`/`public-url` 时，拦截会处于“已配置但未生效”的降级状态；`/carbonguard status` 会显示“入服拦截: 关闭”。完成第 3 节配置后重新执行 `/carbonguard reload` 即正式开启。
+
+### 2.4 配置文件自动升级
+
+`config.yml` 带有 `config-version`。启动或 `/carbonguard reload` 时，若文件版本低于插件版本，会：
+
+1. 在内存中迁移（删除已废弃的键、按默认值补齐新增的 `binding.*`、更新 `config-version`）；
+2. 把原文件备份为 `config.<时间戳>.yml`；
+3. 一次性写回 `config.yml`（自动生成的管理密钥与迁移结果同一次写入，不会互相覆盖）；
+4. 在启动日志与 `/carbonguard reload` 的提示中说明升级结果。
+
+迁移不会覆盖已有的运营配置，只在键缺失时填入默认值。当前版本为 `config-version: 2`。
 
 ## 3. 快速开始
 
@@ -186,7 +209,7 @@ Geyser 直连且没有 Floodgate 时，无法通过 Floodgate API 获取 XUID。
 
 1. 解析身份与真实 IP
 2. 直接封禁（XUID/UUID）→ 立即拒绝
-3. 入服拦截（默认开启）→ 未绑定玩家被拒绝并展示网页面板链接（带一次性 ticket）
+3. 入服拦截（默认开启）→ 未绑定玩家被拒绝，踢出消息给出 `/bind` 页面地址与玩家 ID
 4. IP 关联封禁动作
    - `REJECT` → 拒绝
    - `PENDING_REVIEW` → 放行并写待审
@@ -214,16 +237,22 @@ NAT、校园网、公司出口、移动网络 CGNAT、VPN/代理会让大量合�
 
 ## 6. 邮箱与绑定流程
 
-1. 未绑定玩家被踢出，消息包含：
-   `http://面板/?bind=<一次性ticket>`
-2. 页面用 ticket 调用 `/api/public/ticket`，展示玩家与有效期。
-3. 玩家填写 QQ 邮箱和 QQ 号，请求验证码。
-4. 服务端发送 6 位验证码，返回一次性 `challengeToken`。
-5. 玩家提交 challenge、验证码、QQ 号。
-6. 事务内校验验证码、立即消费 challenge、写入绑定、消费 ticket。
-7. 验证码 PBKDF2-HMAC-SHA256 存储，最多尝试 5 次；成功后立即失效，不能重放。
+1. 未绑定玩家被踢出，消息包含绑定页面与 ID：
+   ```
+   请打开下面的绑定页面完成邮箱绑定
+   https://面板/bind
+   你的 ID: <UUID>
+   ```
+2. 玩家打开 `https://面板/bind`，输入账号 ID（游戏内 UUID、基岩版 XUID 或游戏名）。
+3. 服务端用 `identities` 索引匹配账号（UUID 有/无连字符、XUID、游戏名），返回玩家名、UUID 与 QQ 头像，页面确认后再继续。
+4. 绑定邮箱固定为 `<ID>@qq.com`，页面只读展示，玩家无法改成其他地址。
+5. 服务端向该邮箱发送 6 位验证码，返回一次性 `requestToken`（浏览器只持有它，验证码以 PBKDF2 存储）。
+6. 玩家提交验证码；事务内校验、立即消费验证码、写入绑定。
+7. 验证码最多尝试 5 次，成功后立即失效，不能重放；同一 ID 重新发送有冷却时间。
 
-绑定 ticket 是内存 Bearer token（数据库只存哈希），插件重启后旧链接失效，玩家重新登录获取新链接即可。
+没有一次性 ticket：玩家随时可以打开 `/bind` 自助绑定，踢出消息不再携带临时令牌。旧的 `/?bind=<ticket>` 链接会被重定向到 `/bind` 页面，不再生效。
+
+> 头像来自 `https://q1.qlogo.cn/g?b=qq&nk=<QQ号>&s=100`，只对纯数字 QQ 号显示；其他 ID 显示首字母占位。头像加载失败会自动回退占位图，不影响绑定。可用 `binding.show-avatars: false` 关闭。
 
 ## 7. 命令
 
@@ -233,8 +262,8 @@ NAT、校园网、公司出口、移动网络 CGNAT、VPN/代理会让大量合�
 | `/carbonguard status [玩家]` | 模块状态或玩家身份/绑定/封禁状态 |
 | `/carbonguard ban <玩家> [时长] [原因]` | 封禁并记录当前+历史 IP；省略时长=永久；时长如 `1h`、`7d`、`12h30m` |
 | `/carbonguard unban <玩家\|#编号>` | 解封并清除该封禁的 IP 关联 |
-| `/carbonguard unbind <玩家\|xuid:...\|uuid:...>` | 解除邮箱/QQ 绑定，并作废未使用的绑定 ticket/challenge |
-| `/carbonguard reload` | 重载配置、重启 Web、刷新缓存 |
+| `/carbonguard unbind <玩家\|xuid:...\|uuid:...>` | 解除邮箱绑定，并作废该账号未使用的验证码 |
+| `/carbonguard reload` | 重载配置（含旧配置自动升级）、重启 Web、刷新缓存 |
 
 权限：`carbonguard.admin`（默认 OP）。所有子命令也可使用 `/cg` 或 `/carbon` 前缀，例如 `/cg status`。数据库操作全部异步，不阻塞主线程。
 
@@ -242,8 +271,8 @@ NAT、校园网、公司出口、移动网络 CGNAT、VPN/代理会让大量合�
 
 页面：
 
-- **绑定验证**：`/?bind=<ticket>`，支持手动粘贴令牌
-- **绑定管理**：按玩家名/XUID/UUID/邮箱/QQ 查询绑定，可解除绑定
+- **绑定验证**：`/bind`（或 `/#bind`），输入 ID → 匹配账号与头像 → 只读确认 `<ID>@qq.com` → 验证码
+- **绑定管理**：按玩家名/ID/XUID/UUID/邮箱查询绑定，可解除绑定
 - **封禁查询**：按玩家名/XUID/UUID/封禁编号/IP 查询；待审队列通过（记录并在 `review.approval-ttl-hours` 内抑制同一 类型/身份/IP 的重复待审）、拒绝（踢出当前在线会话）、解封（解除封禁并清除 IP 关联）
 - **玩家数据**：按玩家名/XUID/UUID/邮箱/QQ 或 IP 查询初次加入、绑定时间、最近登录、登录次数、累计游玩时长与最近 IP
 - **统计概览**：在线、身份、绑定、封禁、24h 登录/拒绝、7 天趋势、模块状态
@@ -259,13 +288,13 @@ NAT、校园网、公司出口、移动网络 CGNAT、VPN/代理会让大量合�
 - 无 CORS、无 Cookie、无内联脚本/样式；
 - `X-Forwarded-For` 默认不信任，只有 `web.trust-forwarded-for: true` 才读取。
 
-公开端点：
+公开端点（玩家自助绑定，无 ticket）：
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/api/public/ticket?token=` | 校验 ticket，返回玩家与有效期 |
-| POST | `/api/public/request-code` | `{ticket,email}`，发送验证码 |
-| POST | `/api/public/verify` | `{challengeToken,code,qq}`，完成绑定 |
+| GET | `/api/public/lookup?id=` | 按 UUID/XUID/游戏名匹配账号，返回玩家名、UUID、`<ID>@qq.com` 与 QQ 头像 |
+| POST | `/api/public/request-code` | `{playerId,email}`，向 `<playerId>@qq.com` 发送验证码（服务器决定邮箱） |
+| POST | `/api/public/verify` | `{requestToken,code}`，完成绑定 |
 
 管理端点（均需密钥）：
 
@@ -318,7 +347,9 @@ web:
 
 数据文件：`plugins/CarbonGuard/carbonguard.db`（SQLite，WAL）。
 
-表：`identities`、`bindings`、`ip_history`、`bans`、`ban_ip_assoc`、`reviews`、`review_allowlist`、`player_profiles`、`login_events`、`bind_tickets`、`email_challenges`、`identity_aliases`、`schema_meta`。
+表：`identities`、`bindings`、`ip_history`、`bans`、`ban_ip_assoc`、`reviews`、`review_allowlist`、`player_profiles`、`login_events`、`verification_codes`、`identity_aliases`、`schema_meta`，以及旧版本遗留的 `bind_tickets` / `email_challenges`。
+
+数据库 schema 当前为 v4：相对 v3 新增 `identities.player_id`、`bindings.email_key` 与 `verification_codes` 表。升级时会在既有数据库上就地补列，旧绑定数据保留（邮箱键按现有地址回填）。
 
 异步设计：
 
@@ -353,7 +384,7 @@ Windows：
 ./gradlew test
 ```
 
-当前测试覆盖 CIDR（含负前缀/端口拒绝）、令牌/PBKDF2、时长解析、SQLite schema/事务/唯一约束、封禁与 IP 关联缓存、UUID_FALLBACK → XUID 迁移（含目标已存在）、身份 source 不降级、IPv6 /64 聚合、复核放行抑制、解绑、会话生命周期与 IPv6 计数、自动更新版本解析、玩家初次加入/绑定时间/游玩时长记录与历史补齐。
+当前测试覆盖 CIDR（含负前缀/端口拒绝）、令牌/PBKDF2、时长解析、SQLite schema/事务/唯一约束、封禁与 IP 关联缓存、UUID_FALLBACK → XUID 迁移（含目标已存在）、身份 source 不降级、IPv6 /64 聚合、复核放行抑制、解绑、会话生命周期与 IPv6 计数、自动更新版本解析、玩家初次加入/绑定时间/游玩时长记录与历史补齐、`/bind` 绑定流程（按 UUID/XUID/游戏名匹配、邮箱固定为 `<ID>@qq.com`、验证码单次消费）、旧版 `config.yml` 自动迁移与备份。
 
 ## 11. 目录
 
@@ -382,7 +413,8 @@ src/main/resources/
 - 依赖 Paper 26.2 / Adventure 5.2；不要降到旧 Adventure 4.x。
 - Floodgate/Geyser API 是可选的 `compileOnly` 依赖，未安装时插件正常启动。
 - 真实 IP 的正确性最终取决于 Geyser/Paper 的 PROXY protocol 配置，插件无法在错误配置下“猜”出真实 IP。
-- 入服拦截默认开启，但在 SMTP/Web/密钥/public-url 不可用或 SMTP 健康检查失败时自动降级关闭，这是防锁死设计；生产必须监控启动日志。
+- 入服拦截默认开启，但在 Web/密钥/public-url 不可用或绑定页面关闭时自动降级关闭，这是防锁死设计；SMTP 不可用只影响未绑定玩家获取验证码，不会关闭拦截。生产必须监控启动日志。
+- 绑定邮箱固定为 `<ID>@qq.com`：ID 是 UUID/XUID 时页面向 `<UUID>@qq.com` 发送验证码，通常收不到。请引导玩家使用 QQ 号作为 ID（或由管理员解绑后改用 QQ 号绑定）。
 - IPv6 默认按 /64 聚合计入单 IP 限制、IP 关联和 Web 限速；如需更粗/更细粒度，应修改 `IpUtil.networkKey` 并在测试中覆盖。
 - 复核“通过”会抑制同一 (类型, 身份, IP) 的重复待审；不会自动放行封禁，也不会修改单 IP 上限。
 - 登录判定现在 fail-closed：内部异常会拒绝本次登录，而不是放行。

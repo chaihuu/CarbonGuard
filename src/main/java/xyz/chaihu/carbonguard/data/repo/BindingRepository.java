@@ -33,14 +33,14 @@ import xyz.chaihu.carbonguard.data.model.Binding;
 import xyz.chaihu.carbonguard.data.model.BindingView;
 
 public final class BindingRepository {
+    private static final String COLUMNS = "identity_key, email, qq, email_key, verified_at";
+
     public Map<String, Binding> loadAll(Connection connection) throws SQLException {
         Map<String, Binding> result = new HashMap<>();
-        try (PreparedStatement ps = connection.prepareStatement(
-                "SELECT identity_key, email, qq, verified_at FROM bindings");
+        try (PreparedStatement ps = connection.prepareStatement("SELECT " + COLUMNS + " FROM bindings");
              ResultSet rs = ps.executeQuery()) {
             while (rs.next()) {
-                result.put(rs.getString(1), new Binding(rs.getString(1), rs.getString(2),
-                        rs.getString(3), rs.getLong(4)));
+                result.put(rs.getString(1), map(rs));
             }
         }
         return result;
@@ -48,7 +48,7 @@ public final class BindingRepository {
 
     public Optional<Binding> find(Connection connection, String identityKey) throws SQLException {
         try (PreparedStatement ps = connection.prepareStatement(
-                "SELECT identity_key, email, qq, verified_at FROM bindings WHERE identity_key=?")) {
+                "SELECT " + COLUMNS + " FROM bindings WHERE identity_key=?")) {
             ps.setString(1, identityKey);
             try (ResultSet rs = ps.executeQuery()) {
                 return rs.next() ? Optional.of(map(rs)) : Optional.empty();
@@ -56,20 +56,26 @@ public final class BindingRepository {
         }
     }
 
-    public Optional<Binding> findByEmail(Connection connection, String email) throws SQLException {
+    /** Binding whose verified e-mail ID equals {@code emailKey} (already normalised). */
+    public Optional<Binding> findByEmailKey(Connection connection, String emailKey) throws SQLException {
         try (PreparedStatement ps = connection.prepareStatement(
-                "SELECT identity_key, email, qq, verified_at FROM bindings WHERE email=? COLLATE NOCASE")) {
-            ps.setString(1, email);
+                "SELECT " + COLUMNS + " FROM bindings WHERE email_key=? COLLATE NOCASE")) {
+            ps.setString(1, emailKey);
             try (ResultSet rs = ps.executeQuery()) {
                 return rs.next() ? Optional.of(map(rs)) : Optional.empty();
             }
         }
     }
 
-    public boolean emailTaken(Connection connection, String email, String exceptIdentityKey) throws SQLException {
+    public Optional<Binding> findByEmail(Connection connection, String email) throws SQLException {
+        return findByEmailKey(connection, Binding.emailKeyOf(email));
+    }
+
+    public boolean emailTaken(Connection connection, String emailKey, String exceptIdentityKey)
+            throws SQLException {
         try (PreparedStatement ps = connection.prepareStatement(
-                "SELECT 1 FROM bindings WHERE email=? COLLATE NOCASE AND identity_key<>? LIMIT 1")) {
-            ps.setString(1, email);
+                "SELECT 1 FROM bindings WHERE email_key=? COLLATE NOCASE AND identity_key<>? LIMIT 1")) {
+            ps.setString(1, emailKey);
             ps.setString(2, exceptIdentityKey);
             try (ResultSet rs = ps.executeQuery()) {
                 return rs.next();
@@ -79,16 +85,18 @@ public final class BindingRepository {
 
     public void save(Connection connection, Binding binding, long now) throws SQLException {
         try (PreparedStatement ps = connection.prepareStatement("""
-                INSERT INTO bindings(identity_key, email, qq, verified_at, created_at)
-                VALUES(?,?,?,?,?)
+                INSERT INTO bindings(identity_key, email, qq, email_key, verified_at, created_at)
+                VALUES(?,?,?,?,?,?)
                 ON CONFLICT(identity_key) DO UPDATE SET
-                    email=excluded.email, qq=excluded.qq, verified_at=excluded.verified_at
+                    email=excluded.email, qq=excluded.qq, email_key=excluded.email_key,
+                    verified_at=excluded.verified_at
                 """)) {
             ps.setString(1, binding.identityKey());
             ps.setString(2, binding.email());
             ps.setString(3, binding.qq());
-            ps.setLong(4, binding.verifiedAt());
-            ps.setLong(5, now);
+            ps.setString(4, Binding.emailKeyOf(binding.emailKey()));
+            ps.setLong(5, binding.verifiedAt());
+            ps.setLong(6, now);
             ps.executeUpdate();
         }
     }
@@ -111,21 +119,25 @@ public final class BindingRepository {
         List<BindingView> result = new ArrayList<>();
         String like = "%" + query + "%";
         try (PreparedStatement ps = connection.prepareStatement("""
-                SELECT b.identity_key, i.player_name, b.email, b.qq, b.verified_at, i.last_seen
+                SELECT b.identity_key, i.player_name, i.player_id, b.email, b.qq, b.email_key,
+                       b.verified_at, i.last_seen
                 FROM bindings b JOIN identities i ON i.identity_key=b.identity_key
                 WHERE i.player_name LIKE ? COLLATE NOCASE
                    OR b.identity_key LIKE ? OR b.email LIKE ? COLLATE NOCASE OR b.qq LIKE ?
+                   OR b.email_key LIKE ? COLLATE NOCASE OR i.player_id LIKE ? COLLATE NOCASE
                 ORDER BY b.verified_at DESC LIMIT ?
                 """)) {
             ps.setString(1, like);
             ps.setString(2, like);
             ps.setString(3, like);
             ps.setString(4, like);
-            ps.setInt(5, limit);
+            ps.setString(5, like);
+            ps.setString(6, like);
+            ps.setInt(7, limit);
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
                     result.add(new BindingView(rs.getString(1), rs.getString(2), rs.getString(3),
-                            rs.getString(4), rs.getLong(5), rs.getLong(6)));
+                            rs.getString(4), rs.getString(5), rs.getLong(7), rs.getLong(8)));
                 }
             }
         }
@@ -133,6 +145,10 @@ public final class BindingRepository {
     }
 
     private static Binding map(ResultSet rs) throws SQLException {
-        return new Binding(rs.getString(1), rs.getString(2), rs.getString(3), rs.getLong(4));
+        String email = rs.getString(2);
+        String emailKey = rs.getString(4);
+        return new Binding(rs.getString(1), email, rs.getString(3),
+                emailKey == null || emailKey.isBlank() ? Binding.emailKeyOf(email) : emailKey,
+                rs.getLong(5));
     }
 }

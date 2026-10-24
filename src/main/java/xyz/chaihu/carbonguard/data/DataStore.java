@@ -47,6 +47,7 @@ import xyz.chaihu.carbonguard.data.repo.PlayerRepository;
 import xyz.chaihu.carbonguard.data.repo.ReviewRepository;
 import xyz.chaihu.carbonguard.data.repo.StatsRepository;
 import xyz.chaihu.carbonguard.data.repo.VerificationRepository;
+import xyz.chaihu.carbonguard.data.repo.VerificationCodeRepository;
 import xyz.chaihu.carbonguard.util.TimeUtil;
 
 /** Composition root for the persistence layer and its login-path caches. */
@@ -60,6 +61,7 @@ public final class DataStore implements AutoCloseable {
     private final ReviewRepository reviews = new ReviewRepository();
     private final StatsRepository stats = new StatsRepository();
     private final VerificationRepository verification = new VerificationRepository();
+    private final VerificationCodeRepository codes = new VerificationCodeRepository();
     private final PlayerRepository players = new PlayerRepository();
     private final BindingCache bindingCache = new BindingCache();
     private final BanCache banCache = new BanCache();
@@ -395,6 +397,10 @@ public final class DataStore implements AutoCloseable {
 
     public VerificationRepository verification() {
         return verification;
+    }
+
+    public VerificationCodeRepository codes() {
+        return codes;
     }
 
     public PlayerRepository players() {
