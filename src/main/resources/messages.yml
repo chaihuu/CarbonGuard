@@ -33,6 +33,13 @@ kick:
     &7身份: &f{identity}
     &7验证码 10 分钟内有效，绑定链接也有时效。
     &7完成后重新连接服务器即可。
+  binding-unavailable: |-
+    &c绑定验证服务暂时不可用，已拒绝本次登录
+    &7玩家: &f{player}
+    &7请联系管理员检查 Web/SMTP 状态。
+  internal-error: |-
+    &c服务器登录校验异常，已拒绝本次登录
+    &7请稍后重试或联系管理员。
 
 command:
   no-permission: "{prefix}&c你没有权限执行该命令。"
@@ -41,6 +48,7 @@ command:
     &7/carbonguard status [玩家] &8- &f查看模块/玩家状态
     &7/carbonguard ban <玩家> [时长] [原因] &8- &f封禁，时长如 7d、12h，省略为永久
     &7/carbonguard unban <玩家|#编号> &8- &f解封并清除关联
+    &7/carbonguard unbind <玩家|xuid:..|uuid:..> &8- &f解除邮箱/QQ 绑定
     &7/carbonguard reload &8- &f重载配置并重启 Web 面板
   status-server: |-
     {prefix}&b运行状态
@@ -56,6 +64,9 @@ command:
   player-not-found: "{prefix}&c没有找到玩家或身份记录: &f{player}"
   ban-usage: "{prefix}&c用法: /carbonguard ban <玩家> [时长] [原因]"
   unban-usage: "{prefix}&c用法: /carbonguard unban <玩家|#编号>"
+  unbind-usage: "{prefix}&c用法: /carbonguard unbind <玩家|xuid:..|uuid:..>"
+  unbind-success: "{prefix}&a已解除 &f{target}&a 的绑定。"
+  unbind-none: "{prefix}&e没有找到绑定记录: &f{target}"
   ban-success: "{prefix}&a已封禁 &f{player}&a，记录 &f#{id}&a，到期 &f{expires}&a。"
   unban-success: "{prefix}&a已解封 &f{target}&a。"
   unban-none: "{prefix}&e没有找到生效中的封禁: &f{target}"

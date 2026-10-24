@@ -102,11 +102,50 @@ public final class BanService {
         });
     }
 
+    /**
+     * Unbans every alias key of an identity (XUID, uuid fallback and observed XUID),
+     * so a transient Floodgate fallback cannot leave a hidden active ban behind.
+     */
+    public CompletableFuture<Integer> unbanIdentity(PlayerIdentity identity, String actor) {
+        long now = TimeUtil.now();
+        return data.database().writeTransaction(connection -> {
+            List<Long> ids = new java.util.ArrayList<>();
+            for (String key : identity.lookupKeys()) {
+                data.bans().bansForIdentity(connection, key).stream()
+                        .filter(BanRecord::effectiveActive)
+                        .map(BanRecord::id)
+                        .forEach(ids::add);
+            }
+            int changed = 0;
+            for (String key : identity.lookupKeys()) {
+                changed += data.bans().deactivateAllForIdentity(connection, key, actor, now);
+            }
+            return new UnbanResult(changed, ids);
+        }).thenApply(result -> {
+            result.ids().forEach(data.banCache()::removeBan);
+            return result.count();
+        });
+    }
+
     public CompletableFuture<Optional<BanRecord>> activeBanFor(String identityKey) {
         return data.database().webAsync(connection ->
                 data.bans().bansForIdentity(connection, identityKey).stream()
                         .filter(BanRecord::effectiveActive)
                         .findFirst());
+    }
+
+    public CompletableFuture<Optional<BanRecord>> activeBanFor(PlayerIdentity identity) {
+        return data.database().webAsync(connection -> {
+            for (String key : identity.lookupKeys()) {
+                Optional<BanRecord> found = data.bans().bansForIdentity(connection, key).stream()
+                        .filter(BanRecord::effectiveActive)
+                        .findFirst();
+                if (found.isPresent()) {
+                    return found;
+                }
+            }
+            return Optional.empty();
+        });
     }
 
     public CompletableFuture<List<BanRecord>> historyFor(String identityKey) {

@@ -52,10 +52,12 @@ public final class LoginGate {
     private final Supplier<Messages> messages;
     private final Supplier<CarbonGuardConfig> configSupplier;
     private final BooleanSupplier bindingOperational;
+    private final BooleanSupplier bindingMaintenance;
 
     public LoginGate(DataStore data, SessionRegistry sessions, AccessPolicy accessPolicy,
                      BindTicketService tickets, Supplier<Messages> messages,
-                     Supplier<CarbonGuardConfig> configSupplier, BooleanSupplier bindingOperational) {
+                     Supplier<CarbonGuardConfig> configSupplier, BooleanSupplier bindingOperational,
+                     BooleanSupplier bindingMaintenance) {
         this.data = data;
         this.sessions = sessions;
         this.accessPolicy = accessPolicy;
@@ -63,6 +65,7 @@ public final class LoginGate {
         this.messages = messages;
         this.configSupplier = configSupplier;
         this.bindingOperational = bindingOperational;
+        this.bindingMaintenance = bindingMaintenance;
     }
 
     public LoginDecision evaluate(PlayerIdentity identity, String ip) {
@@ -72,7 +75,7 @@ public final class LoginGate {
         List<String> notes = new ArrayList<>();
 
         if (config.ban().enable() && config.ban().idUidXuid().enable()) {
-            Optional<BanRecord> ban = data.banCache().directBan(identity.key());
+            Optional<BanRecord> ban = directBan(identity);
             if (ban.isPresent()) {
                 BanRecord record = ban.get();
                 notes.add("direct_ban=" + record.id());
@@ -84,22 +87,33 @@ public final class LoginGate {
             }
         }
 
-        if (bindingEnforced(config) && !globalBypass && !data.bindingCache().isBound(identity.key())) {
-            if (!data.bindingCache().ready()) {
-                notes.add("binding_cache_not_ready=fail_open");
-            } else {
-                String url = config.web().publicUrl();
-                Optional<BindTicketService.Ticket> ticket = tickets.issue(identity, ip);
-                if (ticket.isPresent()) {
-                    url = tickets.urlFor(ticket.get().raw());
-                }
-                notes.add("unbound=true");
-                return LoginDecision.deny(messages.get().component("kick.unbound", Map.of(
-                        "url", url,
-                        "player", safe(identity.playerName()),
-                        "identity", safe(identity.displayIdentity())
-                )), String.join(";", notes), false);
+        boolean bindingRequired = config.emailVerify().enable() && config.emailVerify().requireBinding();
+        if (bindingRequired && !globalBypass) {
+            if (bindingMaintenance.getAsBoolean()) {
+                notes.add("binding_service=reloading");
+                return LoginDecision.deny(messages.get().component("kick.binding-unavailable",
+                        Map.of("player", safe(identity.playerName()))),
+                        String.join(";", notes), false);
             }
+        }
+        if (bindingRequired && !globalBypass && bindingOperational.getAsBoolean() && !isBound(identity)) {
+            if (!data.bindingCache().ready()) {
+                notes.add("binding_cache_not_ready");
+                return LoginDecision.deny(messages.get().component("kick.binding-unavailable",
+                        Map.of("player", safe(identity.playerName()))),
+                        String.join(";", notes), false);
+            }
+            String url = config.web().publicUrl();
+            Optional<BindTicketService.Ticket> ticket = tickets.issue(identity, ip);
+            if (ticket.isPresent()) {
+                url = tickets.urlFor(ticket.get().raw());
+            }
+            notes.add("unbound=true");
+            return LoginDecision.deny(messages.get().component("kick.unbound", Map.of(
+                    "url", url,
+                    "player", safe(identity.playerName()),
+                    "identity", safe(identity.displayIdentity())
+            )), String.join(";", notes), false);
         }
 
         if (config.ban().enable() && config.ban().ipAssociation().enable() && !globalBypass) {
@@ -117,8 +131,14 @@ public final class LoginGate {
                                 "ip", ip
                         )), String.join(";", notes), true);
                     }
-                    case PENDING_REVIEW -> alerts.add(new ReviewAlert(ReviewType.IP_ASSOCIATION,
-                            association.banId(), association.reason()));
+                    case PENDING_REVIEW -> {
+                        if (data.reviewCache().allowed(ReviewType.IP_ASSOCIATION, identity, ip)) {
+                            notes.add("ip_association_review_approved=true");
+                        } else {
+                            alerts.add(new ReviewAlert(ReviewType.IP_ASSOCIATION,
+                                    association.banId(), association.reason()));
+                        }
+                    }
                     case LOG_ONLY -> notes.add("ip_association_log_only=true");
                 }
             }
@@ -130,6 +150,7 @@ public final class LoginGate {
             hardLimit = config.ipLimit().hardLimit();
         }
         SessionRegistry.AcquireResult acquire = sessions.tryAcquire(ip, identity.key(), identity.uuid(), hardLimit);
+        String sessionId = acquire.sessionId();
         if (!acquire.allowed()) {
             notes.add("ip_limit=" + acquire.activeCount() + "/" + hardLimit);
             if (config.ipLimit().mode() == IpLimitMode.REJECT) {
@@ -142,9 +163,18 @@ public final class LoginGate {
                 )), String.join(";", notes), false);
             }
             // WARN_ONLY must still be able to enter. Reserve without a cap for this player.
-            sessions.tryAcquire(ip, identity.key(), identity.uuid(), 0);
-            alerts.add(new ReviewAlert(ReviewType.IP_LIMIT, null,
-                    "IP " + ip + " 活跃账号 " + acquire.activeCount() + "，硬上限 " + hardLimit));
+            SessionRegistry.AcquireResult forced = sessions.tryAcquire(ip, identity.key(), identity.uuid(), 0);
+            if (!forced.allowed() || forced.sessionId() == null) {
+                return LoginDecision.deny(messages.get().component("kick.internal-error"),
+                        "ip_limit_reservation_failed", false);
+            }
+            sessionId = forced.sessionId();
+            if (data.reviewCache().allowed(ReviewType.IP_LIMIT, identity, ip)) {
+                notes.add("ip_limit_review_approved=true");
+            } else {
+                alerts.add(new ReviewAlert(ReviewType.IP_LIMIT, null,
+                        "IP " + ip + " 活跃账号 " + acquire.activeCount() + "，硬上限 " + hardLimit));
+            }
             notes.add("ip_limit_warn_only=true");
         } else if (config.ipLimit().enable() && !limitWhitelisted) {
             notes.add("ip_limit=" + acquire.activeCount() + "/" + hardLimit);
@@ -154,13 +184,26 @@ public final class LoginGate {
         }
 
         String outcome = alerts.isEmpty() ? "ALLOWED" : "WARN_ONLY";
-        return LoginDecision.allow(outcome, String.join(";", notes), alerts);
+        return LoginDecision.allow(outcome, String.join(";", notes), alerts, sessionId);
     }
 
-    private boolean bindingEnforced(CarbonGuardConfig config) {
-        return config.emailVerify().enable()
-                && config.emailVerify().requireBinding()
-                && bindingOperational.getAsBoolean();
+    private Optional<BanRecord> directBan(PlayerIdentity identity) {
+        for (String key : identity.lookupKeys()) {
+            Optional<BanRecord> ban = data.banCache().directBan(key);
+            if (ban.isPresent()) {
+                return ban;
+            }
+        }
+        return Optional.empty();
+    }
+
+    private boolean isBound(PlayerIdentity identity) {
+        for (String key : identity.lookupKeys()) {
+            if (data.bindingCache().isBound(key)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static String safe(String value) {

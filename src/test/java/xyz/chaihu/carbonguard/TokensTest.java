@@ -51,6 +51,9 @@ class TokensTest {
         assertEquals(Duration.ZERO, DurationParser.parse("permanent").orElseThrow());
         assertTrue(DurationParser.parse("7x").isEmpty());
         assertTrue(DurationParser.parse("").isEmpty());
+        assertFalse(DurationParser.isPermanentToken("0s"));
+        assertTrue(DurationParser.looksLikeDuration("99999999999999999999d"));
+        assertTrue(DurationParser.parse("99999999999999999999d").isEmpty());
     }
 
     @Test

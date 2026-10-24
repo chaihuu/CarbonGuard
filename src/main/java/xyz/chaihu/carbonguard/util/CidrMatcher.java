@@ -53,9 +53,11 @@ public final class CidrMatcher {
         String value = input.trim();
         String addressPart = value;
         int prefix = -1;
+        boolean hasPrefix = false;
         int slash = value.lastIndexOf('/');
         if (slash >= 0) {
             addressPart = value.substring(0, slash).trim();
+            hasPrefix = true;
             try {
                 prefix = Integer.parseInt(value.substring(slash + 1).trim());
             } catch (NumberFormatException e) {
@@ -67,7 +69,7 @@ public final class CidrMatcher {
             return null;
         }
         int max = address.length * 8;
-        if (prefix < 0) {
+        if (!hasPrefix) {
             prefix = max;
         }
         if (prefix < 0 || prefix > max) {

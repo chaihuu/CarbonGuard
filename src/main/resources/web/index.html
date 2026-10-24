@@ -27,6 +27,7 @@
   <nav class="tabs" aria-label="主导航">
     <button class="tab" type="button" data-page="bind">绑定验证</button>
     <button class="tab" type="button" data-page="bans">封禁查询</button>
+    <button class="tab" type="button" data-page="bindings">绑定管理</button>
     <button class="tab" type="button" data-page="stats">统计概览</button>
   </nav>
   <button id="key-button" class="key-button" type="button" title="管理密钥">管理密钥</button>
@@ -158,8 +159,34 @@
     </div>
   </section>
 
-  <section id="page-stats" class="page hidden" aria-labelledby="stats-title">
+  <section id="page-bindings" class="page hidden" aria-labelledby="bindings-title">
     <div class="hero compact">
+      <p class="eyebrow">BINDINGS</p>
+      <h1 id="bindings-title">邮箱绑定管理</h1>
+      <p class="lede">按玩家名、XUID、UUID 或邮箱查询绑定；解除绑定后玩家需要重新验证 QQ 邮箱。</p>
+    </div>
+
+    <div id="bindings-content" class="admin-content hidden">
+      <div class="panel">
+        <form id="binding-search-form" class="inline-form" autocomplete="off">
+          <label class="sr-only" for="binding-query">查询</label>
+          <input id="binding-query" type="search" maxlength="100" placeholder="玩家名 / XUID / UUID / 邮箱 / QQ">
+          <button class="primary" type="submit">查询</button>
+        </form>
+        <p id="bindings-status" class="status" role="status" aria-live="polite"></p>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h2>绑定记录</h2>
+          <span id="binding-count" class="badge">0</span>
+        </div>
+        <div id="binding-list" class="list"></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="page-stats" class="page hidden" aria-labelledby="stats-title">    <div class="hero compact">
       <p class="eyebrow">OVERVIEW</p>
       <h1 id="stats-title">运行统计</h1>
       <p class="lede">统计来自登录事件与内存在线会话，不会参与登录判定。</p>

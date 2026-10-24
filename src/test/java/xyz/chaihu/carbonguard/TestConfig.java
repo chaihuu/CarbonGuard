@@ -46,6 +46,7 @@ public final class TestConfig {
                 new CarbonGuardConfig.EmailVerify(true, true, 600, 1_800, 5, 60,
                         true, List.of("qq.com", "vip.qq.com", "foxmail.com")),
                 new CarbonGuardConfig.Stats(true, 30),
+                new CarbonGuardConfig.Review(168),
                 new CarbonGuardConfig.Whitelist(true, List.of("127.0.0.1"), List.of())
         );
     }

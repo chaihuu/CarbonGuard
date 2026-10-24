@@ -139,12 +139,28 @@ public final class VerificationRepository {
         }
     }
 
-    public void deleteChallenge(Connection connection, String challengeHash) throws SQLException {
+    public int deleteChallenge(Connection connection, String challengeHash) throws SQLException {
         try (PreparedStatement ps = connection.prepareStatement(
                 "DELETE FROM email_challenges WHERE challenge_hash=?")) {
             ps.setString(1, challengeHash);
-            ps.executeUpdate();
+            return ps.executeUpdate();
         }
+    }
+
+    /** Invalidates pending tickets/challenges after an admin unbind. */
+    public int deleteForIdentity(Connection connection, String identityKey) throws SQLException {
+        int removed = 0;
+        try (PreparedStatement ps = connection.prepareStatement(
+                "DELETE FROM bind_tickets WHERE identity_key=?")) {
+            ps.setString(1, identityKey);
+            removed += ps.executeUpdate();
+        }
+        try (PreparedStatement ps = connection.prepareStatement(
+                "DELETE FROM email_challenges WHERE identity_key=?")) {
+            ps.setString(1, identityKey);
+            removed += ps.executeUpdate();
+        }
+        return removed;
     }
 
     public int countRecentChallenges(Connection connection, String identityKey, long since) throws SQLException {

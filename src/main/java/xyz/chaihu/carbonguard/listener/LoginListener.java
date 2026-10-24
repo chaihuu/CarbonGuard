@@ -48,20 +48,35 @@ public final class LoginListener implements Listener {
         if (event.getLoginResult() != AsyncPlayerPreLoginEvent.Result.ALLOWED) {
             return;
         }
-        PlayerIdentity identity = plugin.identityResolver().resolve(event.getUniqueId(), event.getName());
-        String ip = IpUtil.normalize(event.getAddress());
+        PlayerIdentity identity;
+        String ip;
+        try {
+            identity = plugin.identityResolver().resolve(event.getUniqueId(), event.getName());
+            ip = IpUtil.normalize(event.getAddress());
+        } catch (Throwable error) {
+            plugin.getLogger().log(Level.SEVERE, "身份/IP 解析异常，已 fail-closed 拒绝: " + event.getName(), error);
+            event.disallow(AsyncPlayerPreLoginEvent.Result.KICK_OTHER,
+                    plugin.messages().component("kick.internal-error"));
+            return;
+        }
+
         LoginDecision decision;
         try {
             decision = plugin.loginGate().evaluate(identity, ip);
         } catch (Throwable error) {
-            plugin.getLogger().log(Level.SEVERE, "登录判定异常，已 fail-open 放行 " + identity.playerName(), error);
-            decision = LoginDecision.allow("ALLOWED", "gate_error=" + error.getClass().getSimpleName(), java.util.List.of());
-            plugin.data().recordLogin(identity, ip, decision.outcome(), decision.detail());
-            contexts.put(event.getUniqueId(), new LoginContexts.Context(identity, ip));
+            // Access control must not fail open. A broken cache or unexpected runtime
+            // fault is a denial, not a free pass for a banned account.
+            plugin.getLogger().log(Level.SEVERE, "登录判定异常，已 fail-closed 拒绝 " + identity.playerName(), error);
+            event.disallow(AsyncPlayerPreLoginEvent.Result.KICK_OTHER,
+                    plugin.messages().component("kick.internal-error"));
             return;
         }
 
-        plugin.data().recordLogin(identity, ip, decision.outcome(), decision.detail());
+        try {
+            plugin.data().recordLogin(identity, ip, decision.outcome(), decision.detail());
+        } catch (Throwable error) {
+            plugin.getLogger().log(Level.WARNING, "记录登录事件失败（不阻断登录）", error);
+        }
         if (!decision.allowed()) {
             plugin.debug("拒绝登录 " + identity.playerName() + " (" + identity.key() + ") ip=" + ip
                     + " reason=" + decision.detail());
@@ -83,7 +98,7 @@ public final class LoginListener implements Listener {
             plugin.getLogger().info("待审登录: " + identity.playerName() + " ip=" + ip
                     + " detail=" + decision.detail());
         }
-        contexts.put(event.getUniqueId(), new LoginContexts.Context(identity, ip));
+        contexts.put(event.getUniqueId(), new LoginContexts.Context(identity, ip, decision.sessionId()));
         plugin.debug("允许登录 " + identity.playerName() + " (" + identity.key() + ") ip=" + ip
                 + " source=" + identity.source() + " outcome=" + decision.outcome());
     }

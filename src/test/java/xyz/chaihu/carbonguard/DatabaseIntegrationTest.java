@@ -136,14 +136,21 @@ class DatabaseIntegrationTest {
             assertTrue(failed);
             assertEquals(1L, (long) data.database().webNow(connection -> data.bindings().count(connection)));
 
-            data.database().write(connection -> {
+            data.database().writeTransaction(connection -> {
                 data.identities().upsert(connection, one, "198.51.100.9", now);
                 throw new IllegalStateException("rollback");
             }).handle((ignored, error) -> null).get(5, TimeUnit.SECONDS);
 
-            String lastIp = data.database().coreNow(connection ->
-                    data.identities().findByKey(connection, one.key()).orElseThrow().displayIdentity());
-            assertTrue(lastIp.contains("UUID"));
+            String lastIp = data.database().coreNow(connection -> {
+                try (PreparedStatement ps = connection.prepareStatement(
+                        "SELECT last_ip FROM identities WHERE identity_key=?")) {
+                    ps.setString(1, one.key());
+                    try (ResultSet rs = ps.executeQuery()) {
+                        return rs.next() ? rs.getString(1) : null;
+                    }
+                }
+            });
+            assertEquals("198.51.100.1", lastIp);
         }
     }
 

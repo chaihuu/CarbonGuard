@@ -67,6 +67,11 @@ public final class WebServer {
             return true;
         }
         try {
+            // JDK HttpServer has no public per-request timeout. Bound slow-loris
+            // request/response handling; the properties are honored by the built-in
+            // server on first initialization.
+            System.setProperty("sun.net.httpserver.maxReqTime", "30");
+            System.setProperty("sun.net.httpserver.maxRspTime", "60");
             Map<String, byte[]> loaded = new HashMap<>();
             for (Map.Entry<String, Asset> entry : ASSETS.entrySet()) {
                 byte[] bytes = readResource(entry.getValue().resource());

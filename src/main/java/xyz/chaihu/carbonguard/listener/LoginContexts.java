@@ -41,6 +41,12 @@ public final class LoginContexts {
         contexts.remove(uuid);
     }
 
-    public record Context(PlayerIdentity identity, String ip) {
+    public void remove(UUID uuid, Context context) {
+        if (context != null) {
+            contexts.remove(uuid, context);
+        }
+    }
+
+    public record Context(PlayerIdentity identity, String ip, String sessionId) {
     }
 }

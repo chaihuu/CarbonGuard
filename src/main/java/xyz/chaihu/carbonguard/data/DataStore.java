@@ -33,11 +33,13 @@ import java.util.logging.Logger;
 import xyz.chaihu.carbonguard.config.CarbonGuardConfig;
 import xyz.chaihu.carbonguard.data.cache.BanCache;
 import xyz.chaihu.carbonguard.data.cache.BindingCache;
+import xyz.chaihu.carbonguard.data.cache.ReviewAllowCache;
 import xyz.chaihu.carbonguard.data.cache.SessionRegistry;
 import xyz.chaihu.carbonguard.data.model.AssociationHit;
 import xyz.chaihu.carbonguard.data.model.BanRecord;
 import xyz.chaihu.carbonguard.data.model.Binding;
 import xyz.chaihu.carbonguard.data.model.PlayerIdentity;
+import xyz.chaihu.carbonguard.data.model.ReviewAllowEntry;
 import xyz.chaihu.carbonguard.data.repo.BanRepository;
 import xyz.chaihu.carbonguard.data.repo.BindingRepository;
 import xyz.chaihu.carbonguard.data.repo.IdentityRepository;
@@ -59,6 +61,7 @@ public final class DataStore implements AutoCloseable {
     private final VerificationRepository verification = new VerificationRepository();
     private final BindingCache bindingCache = new BindingCache();
     private final BanCache banCache = new BanCache();
+    private final ReviewAllowCache reviewCache = new ReviewAllowCache();
     private final SessionRegistry sessions = new SessionRegistry();
     private volatile boolean recordStats;
 
@@ -88,14 +91,18 @@ public final class DataStore implements AutoCloseable {
         long now = TimeUtil.now();
         long bindingVersion = bindingCache.version();
         long banVersion = banCache.version();
+        long reviewVersion = reviewCache.version();
         Map<String, Binding> loadedBindings = database.coreNow(bindings::loadAll);
         List<BanRecord> loadedBans = database.coreNow(connection -> bans.loadActiveBans(connection, now));
         List<AssociationHit> loadedAssociations = database.coreNow(
                 connection -> bans.loadActiveAssociations(connection, now));
+        List<ReviewAllowEntry> loadedReviews = database.coreNow(
+                connection -> reviews.loadActiveAllowlist(connection, now));
         // A write-through may have landed while the queries ran. In that case the
         // snapshot is already newer than the query; skip it rather than roll back.
         bindingCache.replaceAllIfUnchanged(loadedBindings, bindingVersion);
         banCache.replaceAllIfUnchanged(loadedBans, loadedAssociations, banVersion);
+        reviewCache.replaceAllIfUnchanged(loadedReviews, reviewVersion);
     }
 
     /**
@@ -151,6 +158,17 @@ public final class DataStore implements AutoCloseable {
                     ps.setString(1, newKey);
                     ps.setString(2, old.key());
                     ps.executeUpdate();
+                }
+                try (PreparedStatement ps = connection.prepareStatement(
+                        "SELECT COUNT(*) FROM bindings WHERE identity_key=?")) {
+                    ps.setString(1, old.key());
+                    try (ResultSet rs = ps.executeQuery()) {
+                        if (rs.next() && rs.getInt(1) > 0) {
+                            logger.warning("迁移 " + old.key() + " -> " + newKey
+                                    + " 时目标身份已有绑定，旧绑定 " + rs.getInt(1)
+                                    + " 条被丢弃（保留目标身份绑定）");
+                        }
+                    }
                 }
                 try (PreparedStatement ps = connection.prepareStatement(
                         "DELETE FROM bindings WHERE identity_key=?")) {
@@ -213,6 +231,18 @@ public final class DataStore implements AutoCloseable {
         }
         try (PreparedStatement ps = connection.prepareStatement(
                 "UPDATE login_events SET identity_key=? WHERE identity_key=?")) {
+            ps.setString(1, newKey);
+            ps.setString(2, oldKey);
+            ps.executeUpdate();
+        }
+        try (PreparedStatement ps = connection.prepareStatement(
+                "UPDATE bind_tickets SET identity_key=? WHERE identity_key=?")) {
+            ps.setString(1, newKey);
+            ps.setString(2, oldKey);
+            ps.executeUpdate();
+        }
+        try (PreparedStatement ps = connection.prepareStatement(
+                "UPDATE email_challenges SET identity_key=? WHERE identity_key=?")) {
             ps.setString(1, newKey);
             ps.setString(2, oldKey);
             ps.executeUpdate();
@@ -313,6 +343,10 @@ public final class DataStore implements AutoCloseable {
 
     public BanCache banCache() {
         return banCache;
+    }
+
+    public ReviewAllowCache reviewCache() {
+        return reviewCache;
     }
 
     public SessionRegistry sessions() {

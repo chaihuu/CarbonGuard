@@ -40,12 +40,19 @@ public final class IdentityRepository {
                                        identity_source, first_seen, last_seen, last_ip)
                 VALUES(?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(identity_key) DO UPDATE SET
-                    identity_type=excluded.identity_type,
+                    identity_type=CASE
+                        WHEN identities.identity_type='XUID' OR excluded.identity_type='XUID' THEN 'XUID'
+                        ELSE 'UUID' END,
                     xuid=COALESCE(excluded.xuid, identities.xuid),
                     observed_xuid=COALESCE(excluded.observed_xuid, identities.observed_xuid),
                     uuid=excluded.uuid,
                     player_name=excluded.player_name,
-                    identity_source=excluded.identity_source,
+                    identity_source=CASE
+                        WHEN identities.identity_source='FLOODGATE' OR excluded.identity_source='FLOODGATE'
+                            THEN 'FLOODGATE'
+                        WHEN identities.identity_source='UUID_FALLBACK' OR excluded.identity_source='UUID_FALLBACK'
+                            THEN 'UUID_FALLBACK'
+                        ELSE 'JAVA' END,
                     last_seen=excluded.last_seen,
                     last_ip=excluded.last_ip
                 """;
@@ -67,14 +74,24 @@ public final class IdentityRepository {
     public void touch(Connection connection, PlayerIdentity identity, String ip, long now) throws SQLException {
         try (PreparedStatement ps = connection.prepareStatement("""
                 UPDATE identities SET player_name=?, last_seen=?, last_ip=?,
-                    observed_xuid=COALESCE(?, observed_xuid)
+                    observed_xuid=COALESCE(?, observed_xuid),
+                    identity_source=CASE
+                        WHEN identity_source='FLOODGATE' OR ?='FLOODGATE' THEN 'FLOODGATE'
+                        WHEN identity_source='UUID_FALLBACK' OR ?='UUID_FALLBACK' THEN 'UUID_FALLBACK'
+                        ELSE 'JAVA' END,
+                    identity_type=CASE
+                        WHEN identity_type='XUID' OR ?='XUID' THEN 'XUID'
+                        ELSE 'UUID' END
                 WHERE identity_key=?
                 """)) {
             ps.setString(1, identity.playerName());
             ps.setLong(2, now);
             ps.setString(3, ip);
             ps.setString(4, identity.observedXuid());
-            ps.setString(5, identity.key());
+            ps.setString(5, identity.source().name());
+            ps.setString(6, identity.source().name());
+            ps.setString(7, identity.type().name());
+            ps.setString(8, identity.key());
             ps.executeUpdate();
         }
     }
@@ -135,7 +152,8 @@ public final class IdentityRepository {
     public List<PlayerIdentity> fallbackWithObservedXuid(Connection connection) throws SQLException {
         List<PlayerIdentity> result = new ArrayList<>();
         try (PreparedStatement ps = connection.prepareStatement(selectBase()
-                + " WHERE identity_source='UUID_FALLBACK' AND observed_xuid IS NOT NULL AND observed_xuid<>''");
+                + " WHERE identity_key LIKE 'uuid:%' AND xuid IS NULL"
+                + " AND observed_xuid IS NOT NULL AND observed_xuid<>''");
              ResultSet rs = ps.executeQuery()) {
             while (rs.next()) {
                 result.add(map(rs));

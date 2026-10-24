@@ -52,6 +52,7 @@ public final class MailService implements MailSender, AutoCloseable {
     private final Supplier<CarbonGuardConfig> configSupplier;
     private final Logger logger;
     private final ExecutorService executor;
+    private volatile Boolean healthy = Boolean.FALSE;
 
     public MailService(Supplier<CarbonGuardConfig> configSupplier, Logger logger) {
         this.configSupplier = configSupplier;
@@ -71,6 +72,74 @@ public final class MailService implements MailSender, AutoCloseable {
         return configSupplier.get().smtp().configured();
     }
 
+    /** True only after a successful SMTP connect or send with the current config. */
+    public boolean operational() {
+        return configSupplier.get().smtp().configured() && Boolean.TRUE.equals(healthy);
+    }
+
+    /**
+     * Verifies SMTP connectivity/authentication without sending a message. This is
+     * what lets the binding gate distinguish "configured" from "actually usable".
+     */
+    public CompletableFuture<Boolean> probe() {
+        CarbonGuardConfig.Smtp smtp = configSupplier.get().smtp();
+        if (!smtp.configured()) {
+            healthy = Boolean.FALSE;
+            return CompletableFuture.completedFuture(false);
+        }
+        healthy = null;
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                Properties properties = smtpProperties(smtp);
+                boolean auth = smtp.username() != null && !smtp.username().isBlank();
+                Session session;
+                if (auth) {
+                    session = Session.getInstance(properties, new Authenticator() {
+                        @Override
+                        protected PasswordAuthentication getPasswordAuthentication() {
+                            return new PasswordAuthentication(smtp.username(), smtp.password());
+                        }
+                    });
+                } else {
+                    session = Session.getInstance(properties);
+                }
+                try (Transport transport = session.getTransport("smtp")) {
+                    if (auth) {
+                        transport.connect(smtp.host(), smtp.port(), smtp.username(), smtp.password());
+                    } else {
+                        transport.connect();
+                    }
+                }
+                healthy = Boolean.TRUE;
+                logger.info("SMTP 健康检查通过 (" + smtp.host() + ":" + smtp.port() + ")");
+                return true;
+            } catch (Exception e) {
+                healthy = Boolean.FALSE;
+                logger.log(Level.WARNING, "SMTP 健康检查失败 (" + smtp.host() + ":" + smtp.port()
+                        + ")，未绑定拦截将保持关闭", e);
+                return false;
+            }
+        }, executor);
+    }
+
+    private static Properties smtpProperties(CarbonGuardConfig.Smtp smtp) {
+        Properties properties = new Properties();
+        properties.setProperty("mail.smtp.host", smtp.host());
+        properties.setProperty("mail.smtp.port", Integer.toString(smtp.port()));
+        properties.setProperty("mail.smtp.connectiontimeout", Integer.toString(smtp.connectionTimeoutMillis()));
+        properties.setProperty("mail.smtp.timeout", Integer.toString(smtp.connectionTimeoutMillis()));
+        properties.setProperty("mail.smtp.writetimeout", Integer.toString(smtp.connectionTimeoutMillis()));
+        properties.setProperty("mail.smtp.ssl.checkserveridentity", "true");
+        properties.setProperty("mail.smtp.quitwait", "false");
+        boolean implicitTls = smtp.useImplicitTls();
+        properties.setProperty("mail.smtp.ssl.enable", Boolean.toString(implicitTls));
+        properties.setProperty("mail.smtp.starttls.enable", Boolean.toString(!implicitTls));
+        properties.setProperty("mail.smtp.starttls.required", Boolean.toString(!implicitTls));
+        properties.setProperty("mail.smtp.auth",
+                Boolean.toString(smtp.username() != null && !smtp.username().isBlank()));
+        return properties;
+    }
+
     @Override
     public CompletableFuture<Void> sendVerification(String email, String playerName, String code, int ttlSeconds) {
         CarbonGuardConfig.Smtp smtp = configSupplier.get().smtp();
@@ -82,20 +151,8 @@ public final class MailService implements MailSender, AutoCloseable {
 
     private void send(CarbonGuardConfig.Smtp smtp, String email, String playerName, String code, int ttlSeconds) {
         try {
-            Properties properties = new Properties();
-            properties.setProperty("mail.smtp.host", smtp.host());
-            properties.setProperty("mail.smtp.port", Integer.toString(smtp.port()));
-            properties.setProperty("mail.smtp.connectiontimeout", Integer.toString(smtp.connectionTimeoutMillis()));
-            properties.setProperty("mail.smtp.timeout", Integer.toString(smtp.connectionTimeoutMillis()));
-            properties.setProperty("mail.smtp.writetimeout", Integer.toString(smtp.connectionTimeoutMillis()));
-            properties.setProperty("mail.smtp.ssl.checkserveridentity", "true");
-            properties.setProperty("mail.smtp.quitwait", "false");
-            boolean implicitTls = smtp.useImplicitTls();
-            properties.setProperty("mail.smtp.ssl.enable", Boolean.toString(implicitTls));
-            properties.setProperty("mail.smtp.starttls.enable", Boolean.toString(!implicitTls));
-            properties.setProperty("mail.smtp.starttls.required", Boolean.toString(!implicitTls));
+            Properties properties = smtpProperties(smtp);
             boolean auth = smtp.username() != null && !smtp.username().isBlank();
-            properties.setProperty("mail.smtp.auth", Boolean.toString(auth));
 
             Session session;
             if (auth) {
@@ -141,11 +198,14 @@ public final class MailService implements MailSender, AutoCloseable {
             message.setContent(multipart);
 
             Transport.send(message);
+            healthy = Boolean.TRUE;
             logger.info("验证码邮件已发送至 " + maskEmail(email));
         } catch (MessagingException e) {
+            healthy = Boolean.FALSE;
             logger.log(Level.WARNING, "SMTP 发送失败 (" + smtp.host() + ":" + smtp.port() + ")", e);
             throw new IllegalStateException("SMTP 发送失败", e);
         } catch (Exception e) {
+            healthy = Boolean.FALSE;
             logger.log(Level.WARNING, "构造验证码邮件失败", e);
             throw new IllegalStateException("邮件构造失败", e);
         }

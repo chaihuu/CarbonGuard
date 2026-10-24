@@ -88,7 +88,41 @@ public final class IpUtil {
             }
             return true;
         }
-        return cleaned.indexOf(':') >= 0;
+        // A ':' alone is not enough: "1.2.3.4:25565" or ":foo" must not become a
+        // rate-limit/audit key. Require the JDK to parse it as an IPv6 address.
+        if (cleaned.indexOf(':') < 0) {
+            return false;
+        }
+        try {
+            InetAddress parsed = InetAddress.getByName(cleaned);
+            // InetAddress may fold ::ffff:a.b.c.d to an Inet4Address.
+            return parsed instanceof Inet6Address || parsed.getAddress().length == 4;
+        } catch (UnknownHostException e) {
+            return false;
+        }
+    }
+
+    /**
+     * Key used for per-IP accounting. IPv4 keeps the exact address; IPv6 is folded
+     * to its /64 prefix so privacy addresses cannot trivially evade limits, IP
+     * associations or rate limiting.
+     */
+    public static String networkKey(String value) {
+        String normalized = normalize(value);
+        byte[] address = bytes(normalized);
+        if (address == null) {
+            return normalized;
+        }
+        if (address.length == 4) {
+            return normalized;
+        }
+        byte[] masked = new byte[16];
+        System.arraycopy(address, 0, masked, 0, 8);
+        return canonicalV6(masked) + "/64";
+    }
+
+    public static String networkKey(InetAddress address) {
+        return networkKey(normalize(address));
     }
 
     public static boolean isLoopback(String normalizedAddress) {

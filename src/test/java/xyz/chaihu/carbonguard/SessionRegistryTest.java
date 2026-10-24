@@ -81,4 +81,51 @@ class SessionRegistryTest {
         }
         assertEquals(100, registry.activeForIp(ip));
     }
+
+    @Test
+    void rejectedLoginAtAnotherIpKeepsTheConfirmedSession() {
+        SessionRegistry registry = new SessionRegistry();
+        UUID player = UUID.randomUUID();
+        SessionRegistry.AcquireResult first = registry.tryAcquire("10.0.0.1",
+                "uuid:" + player, player, 0);
+        assertTrue(registry.confirm(player, first.sessionId()));
+
+        for (int i = 0; i < 3; i++) {
+            UUID other = UUID.randomUUID();
+            SessionRegistry.AcquireResult acquired = registry.tryAcquire("10.0.0.2",
+                    "uuid:" + other, other, 0);
+            assertTrue(registry.confirm(other, acquired.sessionId()));
+        }
+
+        SessionRegistry.AcquireResult rejected = registry.tryAcquire("10.0.0.2",
+                "uuid:" + player, player, 3);
+        assertFalse(rejected.allowed());
+        assertEquals(1, registry.activeForIp("10.0.0.1"));
+        assertEquals(4, registry.onlineCount());
+    }
+
+    @Test
+    void sessionSpecificReleaseDoesNotDeleteNewerConnection() {
+        SessionRegistry registry = new SessionRegistry();
+        UUID player = UUID.randomUUID();
+        String identity = "uuid:" + player;
+        SessionRegistry.AcquireResult old = registry.tryAcquire("10.0.0.3", identity, player, 0);
+        SessionRegistry.AcquireResult newest = registry.tryAcquire("10.0.0.3", identity, player, 0);
+        assertTrue(registry.confirm(player, newest.sessionId()));
+
+        registry.release(player, old.sessionId());
+        assertEquals(1, registry.activeForIp("10.0.0.3"));
+        assertTrue(registry.confirm(player, newest.sessionId()));
+        registry.release(player, newest.sessionId());
+        assertEquals(0, registry.activeForIp("10.0.0.3"));
+    }
+
+    @Test
+    void ipv6PrivacyAddressesInSamePrefixShareTheLimit() {
+        SessionRegistry registry = new SessionRegistry();
+        UUID one = UUID.randomUUID();
+        UUID two = UUID.randomUUID();
+        assertTrue(registry.tryAcquire("2001:db8:1:2::1", "uuid:" + one, one, 1).allowed());
+        assertFalse(registry.tryAcquire("2001:db8:1:2::2", "uuid:" + two, two, 1).allowed());
+    }
 }

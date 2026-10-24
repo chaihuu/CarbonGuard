@@ -71,6 +71,7 @@ public final class CarbonGuardPlugin extends JavaPlugin {
     private volatile WebServer webServer;
     private LoginContexts loginContexts;
     private final List<BukkitTask> tasks = new ArrayList<>();
+    private volatile boolean reloading;
 
     @Override
     public void onEnable() {
@@ -106,11 +107,11 @@ public final class CarbonGuardPlugin extends JavaPlugin {
         this.bindTickets = new BindTicketService(data, this::config);
         this.authService = new AuthService(data, bindTickets, mailService, this::config, getLogger());
         this.banService = new BanService(data, this::config);
-        this.reviewService = new ReviewService(data);
-        this.adminService = new AdminService(data, config);
+        this.reviewService = new ReviewService(data, this::config);
+        this.adminService = new AdminService(data, config, bindTickets);
         this.loginContexts = new LoginContexts();
         this.loginGate = new LoginGate(data, data.sessions(), accessPolicy, bindTickets,
-                this::messages, this::config, this::bindingGateOperational);
+                this::messages, this::config, this::bindingGateOperational, this::bindingGateMaintenance);
 
         getServer().getPluginManager().registerEvents(new LoginListener(this, loginContexts), this);
         getServer().getPluginManager().registerEvents(new SessionListener(this, loginContexts), this);
@@ -123,10 +124,11 @@ public final class CarbonGuardPlugin extends JavaPlugin {
 
         resumeOnlinePlayers();
         startWeb();
+        probeMail();
         if (config.emailVerify().enable() && config.emailVerify().requireBinding()
-                && !bindingGateOperational()) {
-            getLogger().severe("未绑定拦截已开启，但 SMTP/Web/管理密钥不完整；为防止锁死服务器，该拦截已自动降级关闭。"
-                    + " 修复配置后执行 /carbonguard reload。");
+                && !bindingGateConfigurationComplete()) {
+            getLogger().severe("未绑定拦截已开启，但 SMTP/Web/管理密钥/public-url 不完整；"
+                    + "为防止锁死服务器，该拦截已自动降级关闭。修复配置后执行 /carbonguard reload。");
         }
         scheduleTasks();
         getLogger().info("CarbonGuard 已启用 | Paper 26.2 | " + identityResolver.integrationSummary()
@@ -143,8 +145,9 @@ public final class CarbonGuardPlugin extends JavaPlugin {
                 String ip = IpUtil.normalize(
                         player.getAddress() == null ? null : player.getAddress().getAddress());
                 var identity = identityResolver.resolve(player.getUniqueId(), player.getName());
-                data.sessions().tryAcquire(ip, identity.key(), player.getUniqueId(), 0);
-                data.sessions().confirm(player.getUniqueId());
+                var acquired = data.sessions().tryAcquire(ip, identity.key(), player.getUniqueId(), 0);
+                data.sessions().confirm(player.getUniqueId(), acquired.sessionId());
+                data.sessions().confirmOrCreate(ip, identity.key(), player.getUniqueId(), acquired.sessionId());
                 data.touchIdentity(identity, ip);
             } catch (Throwable error) {
                 getLogger().log(Level.WARNING, "恢复在线会话失败: " + player.getName(), error);
@@ -157,27 +160,78 @@ public final class CarbonGuardPlugin extends JavaPlugin {
             getLogger().info("Web 面板已按配置关闭。");
             return;
         }
-        if (!config.web().hasUsableAdminKey()) {
-            getLogger().severe("web.admin-key 为空或强度不足（至少 24 字符、10 种不同字符）；Web 面板未启动。");
-            return;
-        }
-        webServer = new WebServer(this);
-        if (!webServer.start()) {
+        webServer = createWeb();
+        if (webServer == null) {
             getLogger().severe("Web 面板启动失败，管理/绑定接口不可用。");
         }
+    }
+
+    private WebServer createWeb() {
+        if (!config.web().enable()) {
+            return null;
+        }
+        if (!config.web().hasUsableAdminKey()) {
+            getLogger().severe("web.admin-key 为空或强度不足（至少 24 字符、10 种不同字符）；Web 面板未启动。");
+            return null;
+        }
+        WebServer server = new WebServer(this);
+        if (!server.start()) {
+            server.stop();
+            return null;
+        }
+        return server;
     }
 
     public boolean bindingGateOperational() {
         CarbonGuardConfig current = config;
         WebServer server = webServer;
+        MailService mail = mailService;
+        return bindingGateConfigurationComplete()
+                && mail != null
+                && mail.operational()
+                && server != null
+                && server.isRunning();
+    }
+
+    private boolean bindingGateConfigurationComplete() {
+        CarbonGuardConfig current = config;
         return current != null
                 && current.emailVerify().enable()
                 && current.emailVerify().requireBinding()
                 && current.smtp().configured()
                 && current.web().enable()
                 && current.web().hasUsableAdminKey()
-                && server != null
-                && server.isRunning();
+                && current.web().hasReachablePublicUrl();
+    }
+
+    /** Fail-closed window while an already-enforced binding gate is being restarted. */
+    public boolean bindingGateMaintenance() {
+        return reloading && bindingGateConfigurationComplete();
+    }
+
+    private void probeMail() {
+        MailService mail = mailService;
+        if (mail == null) {
+            return;
+        }
+        try {
+            mail.probe().whenComplete((healthy, error) -> {
+                if (error != null) {
+                    getLogger().log(Level.WARNING, "SMTP 健康检查异常", error);
+                } else if (Boolean.TRUE.equals(healthy)) {
+                    boolean required = config.emailVerify().enable() && config.emailVerify().requireBinding();
+                    getLogger().info(required
+                            ? "SMTP 可用，未绑定拦截状态: " + (bindingGateOperational() ? "开启" : "关闭")
+                            : "SMTP 健康检查通过。");
+                } else if (config.emailVerify().enable() && config.emailVerify().requireBinding()) {
+                    getLogger().warning("SMTP 不可用，未绑定拦截保持关闭。");
+                } else {
+                    getLogger().info("SMTP 当前不可用（未启用未绑定拦截，不影响登录）。");
+                }
+            });
+        } catch (Throwable error) {
+            getLogger().log(Level.WARNING, "无法启动 SMTP 健康检查", error);
+        }
     }
 
     private synchronized void scheduleTasks() {
@@ -228,6 +282,9 @@ public final class CarbonGuardPlugin extends JavaPlugin {
                 getDataFolder().toPath().resolve("config.yml"), getDataFolder().toPath());
         CarbonGuardConfig next = loaded.config();
         CarbonGuardConfig previous = config;
+        Messages previousMessages = messages;
+        AdminService previousAdmin = adminService;
+        WebServer previousWeb = webServer;
         List<String> warnings = new ArrayList<>(loaded.warnings());
         if (!previous.storage().sqliteFile().equals(next.storage().sqliteFile())) {
             warnings.add("storage.sqlite-file 变更需要重启服务器才会生效；本次仍使用原数据库。");
@@ -238,24 +295,67 @@ public final class CarbonGuardPlugin extends JavaPlugin {
         }
 
         Messages nextMessages = Messages.load(this);
+        boolean canReuseWeb = previousWeb != null && previousWeb.isRunning()
+                && next.web().enable() && next.web().hasUsableAdminKey()
+                && sameWebEndpoint(previous, next);
         config = next;
         messages = nextMessages;
+        adminService = new AdminService(data, config, bindTickets);
         data.setRecordStats(next.stats().enable());
         accessPolicy.refresh();
-        if (webServer != null) {
-            webServer.stop();
-            webServer = null;
+
+        if (!canReuseWeb) {
+            boolean wasReloading = reloading;
+            if (next.web().enable()) {
+                reloading = true;
+            }
+            try {
+                if (previousWeb != null) {
+                    previousWeb.stop();
+                    webServer = null;
+                }
+                if (next.web().enable()) {
+                    WebServer started = createWeb();
+                    if (started == null) {
+                        // Restore the previous coherent state instead of committing a
+                        // config whose web listener cannot run.
+                        config = previous;
+                        messages = previousMessages;
+                        adminService = previousAdmin;
+                        accessPolicy.refresh();
+                        data.setRecordStats(previous.stats().enable());
+                        if (previous.web().enable() && previous.web().hasUsableAdminKey()) {
+                            webServer = createWeb();
+                        }
+                        throw new IllegalStateException("Web 面板启动失败，已回滚到旧配置");
+                    }
+                    webServer = started;
+                }
+            } finally {
+                reloading = wasReloading;
+            }
         }
-        adminService = new AdminService(data, config);
-        startWeb();
-        data.refreshCaches();
+
+        probeMail();
+        try {
+            data.refreshCaches();
+        } catch (Exception e) {
+            warnings.add("缓存刷新失败，继续使用上一份缓存: " + e.getMessage());
+            getLogger().log(Level.WARNING, "重载后缓存刷新失败", e);
+        }
         scheduleTasks();
         if (config.emailVerify().enable() && config.emailVerify().requireBinding()
                 && !bindingGateOperational()) {
-            warnings.add("未绑定拦截因 SMTP/Web/密钥不完整而关闭。");
+            warnings.add("未绑定拦截因 SMTP/Web/密钥/public-url 不完整或 SMTP 不可用而关闭。");
         }
         return new ReloadResult(bindingGateOperational(), webServer != null && webServer.isRunning(),
                 List.copyOf(warnings));
+    }
+
+    private static boolean sameWebEndpoint(CarbonGuardConfig a, CarbonGuardConfig b) {
+        return a.web().enable() == b.web().enable()
+                && a.web().bindAddress().equals(b.web().bindAddress())
+                && a.web().port() == b.web().port();
     }
 
     @Override

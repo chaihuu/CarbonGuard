@@ -29,6 +29,7 @@ import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import xyz.chaihu.carbonguard.CarbonGuardPlugin;
 import xyz.chaihu.carbonguard.data.model.PlayerIdentity;
+import xyz.chaihu.carbonguard.service.LoginDecision;
 import xyz.chaihu.carbonguard.util.IpUtil;
 
 /** Converts pre-login reservations into online sessions and releases them on close. */
@@ -42,13 +43,24 @@ public final class SessionListener implements Listener {
     }
 
     /**
-     * Releases a reservation when a connection closes before it ever joins. Using the
-     * modern Paper connection event avoids the deprecated {@code PlayerLoginEvent}.
+     * Releases only the reservation that belongs to this connection. Joined players
+     * have no context (it is removed on join), so a delayed close event for an old
+     * connection cannot delete a newer session lease.
      */
     @EventHandler(priority = EventPriority.MONITOR)
     public void onConnectionClose(PlayerConnectionCloseEvent event) {
-        plugin.data().sessions().release(event.getPlayerUniqueId());
-        contexts.remove(event.getPlayerUniqueId());
+        LoginContexts.Context context = contexts.get(event.getPlayerUniqueId()).orElse(null);
+        if (context == null) {
+            return;
+        }
+        String closeIp = event.getIpAddress() == null ? null
+                : IpUtil.networkKey(event.getIpAddress());
+        if (closeIp != null && !closeIp.equals(IpUtil.networkKey(context.ip()))) {
+            // A delayed close from an old network must not release a newer session.
+            return;
+        }
+        plugin.data().sessions().release(event.getPlayerUniqueId(), context.sessionId());
+        contexts.remove(event.getPlayerUniqueId(), context);
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
@@ -56,22 +68,48 @@ public final class SessionListener implements Listener {
         Player player = event.getPlayer();
         LoginContexts.Context context = contexts.get(player.getUniqueId()).orElse(null);
         if (context == null) {
-            // A plugin reload or an externally injected connection did not pass through our
-            // pre-login listener. Add a zero-limit reservation so online counts stay correct.
-            String ip = IpUtil.normalize(player.getAddress() == null ? null : player.getAddress().getAddress());
+            // A plugin reload or an externally injected connection did not pass through
+            // our pre-login listener. Re-run the gate instead of silently granting a
+            // zero-limit session.
+            String ip = IpUtil.normalize(player.getAddress() == null ? null
+                    : player.getAddress().getAddress());
             PlayerIdentity identity = plugin.identityResolver().resolve(player.getUniqueId(), player.getName());
-            plugin.data().sessions().tryAcquire(ip, identity.key(), player.getUniqueId(), 0);
-            plugin.data().sessions().confirm(player.getUniqueId());
+            LoginDecision decision;
+            try {
+                decision = plugin.loginGate().evaluate(identity, ip);
+            } catch (Throwable error) {
+                plugin.getLogger().log(java.util.logging.Level.SEVERE,
+                        "补登录校验异常，已 fail-closed 踢出 " + player.getName(), error);
+                player.kick(plugin.messages().component("kick.internal-error"));
+                return;
+            }
+            if (!decision.allowed()) {
+                player.kick(decision.message());
+                return;
+            }
+            plugin.data().sessions().confirmOrCreate(ip, identity.key(), player.getUniqueId(),
+                    decision.sessionId());
+            for (LoginDecision.ReviewAlert alert : decision.alerts()) {
+                plugin.data().queueReview(alert.type(), identity, ip, alert.banId(), alert.reason());
+            }
             plugin.data().touchIdentity(identity, ip);
             return;
         }
-        plugin.data().sessions().confirm(player.getUniqueId());
+
+        boolean confirmed = plugin.data().sessions().confirm(player.getUniqueId(), context.sessionId());
+        if (!confirmed) {
+            // The 90-second reservation expired while the client was still connecting.
+            // Re-register the online session rather than under-counting it.
+            plugin.data().sessions().confirmOrCreate(context.ip(), context.identity().key(),
+                    player.getUniqueId(), context.sessionId());
+        }
         plugin.data().touchIdentity(context.identity(), context.ip());
+        contexts.remove(player.getUniqueId(), context);
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
     public void onQuit(PlayerQuitEvent event) {
-        plugin.data().sessions().release(event.getPlayer().getUniqueId());
+        plugin.data().sessions().releaseActive(event.getPlayer().getUniqueId());
         contexts.remove(event.getPlayer().getUniqueId());
     }
 }

@@ -22,16 +22,21 @@ package xyz.chaihu.carbonguard.service;
 
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.function.Supplier;
+import xyz.chaihu.carbonguard.config.CarbonGuardConfig;
 import xyz.chaihu.carbonguard.data.DataStore;
+import xyz.chaihu.carbonguard.data.model.ReviewAllowEntry;
 import xyz.chaihu.carbonguard.data.model.ReviewRecord;
 import xyz.chaihu.carbonguard.data.model.ReviewStatus;
 import xyz.chaihu.carbonguard.util.TimeUtil;
 
 public final class ReviewService {
     private final DataStore data;
+    private final Supplier<CarbonGuardConfig> configSupplier;
 
-    public ReviewService(DataStore data) {
+    public ReviewService(DataStore data, Supplier<CarbonGuardConfig> configSupplier) {
         this.data = data;
+        this.configSupplier = configSupplier;
     }
 
     public CompletableFuture<List<ReviewRecord>> list(ReviewStatus status, int limit) {
@@ -43,12 +48,38 @@ public final class ReviewService {
         if (status == ReviewStatus.PENDING) {
             return CompletableFuture.failedFuture(new IllegalArgumentException("status 必须是 APPROVED 或 REJECTED"));
         }
+        long now = TimeUtil.now();
+        int approvalTtlHours = Math.max(0, configSupplier.get().review().approvalTtlHours());
         return data.database().writeTransaction(connection -> {
-            boolean changed = data.reviews().updateStatus(connection, id, status, actor, TimeUtil.now());
+            boolean changed = data.reviews().updateStatus(connection, id, status, actor, now);
             if (!changed) {
                 throw new IllegalStateException("待审记录不存在或已被处理");
             }
-            return data.reviews().find(connection, id).orElseThrow();
+            ReviewRecord review = data.reviews().find(connection, id).orElseThrow();
+            ReviewAllowEntry allow = null;
+            if (review.ip() != null && !review.ip().isBlank()) {
+                if (status == ReviewStatus.APPROVED && approvalTtlHours > 0) {
+                    long expiresAt = now + approvalTtlHours * 3_600_000L;
+                    data.reviews().allow(connection, review.type(), review.identityKey(), review.ip(),
+                            now, expiresAt, actor);
+                    allow = new ReviewAllowEntry(review.type(), review.identityKey(), review.ip(),
+                            now, expiresAt, actor);
+                } else {
+                    data.reviews().removeAllow(connection, review.type(), review.identityKey(), review.ip());
+                }
+            }
+            return new Decision(review, allow);
+        }).thenApply(decision -> {
+            if (decision.allow() != null) {
+                data.reviewCache().put(decision.allow());
+            } else {
+                data.reviewCache().remove(decision.review().type(),
+                        decision.review().identityKey(), decision.review().ip());
+            }
+            return decision.review();
         });
+    }
+
+    private record Decision(ReviewRecord review, ReviewAllowEntry allow) {
     }
 }

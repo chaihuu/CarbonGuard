@@ -46,7 +46,7 @@ import xyz.chaihu.carbonguard.util.TimeUtil;
 
 /** Administrative command surface. All database work is asynchronous. */
 public final class CarbonGuardCommand implements TabExecutor {
-    private static final List<String> SUBCOMMANDS = List.of("help", "status", "ban", "unban", "reload");
+    private static final List<String> SUBCOMMANDS = List.of("help", "status", "ban", "unban", "unbind", "reload");
     private final CarbonGuardPlugin plugin;
 
     public CarbonGuardCommand(CarbonGuardPlugin plugin) {
@@ -67,6 +67,7 @@ public final class CarbonGuardCommand implements TabExecutor {
             case "status" -> status(sender, args);
             case "ban" -> ban(sender, args);
             case "unban" -> unban(sender, args);
+            case "unbind" -> unbind(sender, args);
             case "reload" -> reload(sender);
             default -> sender.sendMessage(plugin.messages().component("command.help"));
         }
@@ -94,7 +95,7 @@ public final class CarbonGuardCommand implements TabExecutor {
             }
             PlayerIdentity identity = optional.get();
             Binding binding = plugin.data().bindingOf(identity.key()).orElse(null);
-            plugin.banService().activeBanFor(identity.key()).whenComplete((activeBan, error) -> {
+            plugin.banService().activeBanFor(identity).whenComplete((activeBan, error) -> {
                 if (error != null) {
                     plugin.getLogger().log(Level.WARNING, "查询封禁状态失败", error);
                 }
@@ -127,8 +128,17 @@ public final class CarbonGuardCommand implements TabExecutor {
         if (args.length >= 3) {
             Optional<Duration> parsed = DurationParser.parse(args[2]);
             if (parsed.isPresent()) {
+                if (parsed.get().isZero() && !DurationParser.isPermanentToken(args[2])) {
+                    sender.sendMessage(plugin.messages().component("command.ban-usage"));
+                    return;
+                }
                 duration = parsed.get();
                 reasonIndex = 3;
+            } else if (DurationParser.looksLikeDuration(args[2])) {
+                // A malformed/overflowing duration must not silently become a permanent
+                // ban with the duration token as part of the reason.
+                sender.sendMessage(plugin.messages().component("command.ban-usage"));
+                return;
             }
         }
         String reason = reasonIndex >= args.length ? "未提供原因"
@@ -206,7 +216,7 @@ public final class CarbonGuardCommand implements TabExecutor {
             return;
         }
         resolveTarget(target).thenCompose(optional -> optional
-                        .map(identity -> plugin.banService().unbanIdentity(identity.key(), sender.getName()))
+                        .map(identity -> plugin.banService().unbanIdentity(identity, sender.getName()))
                         .orElseGet(() -> CompletableFuture.completedFuture(-1)))
                 .whenComplete((count, error) -> {
                     if (error != null) {
@@ -222,6 +232,39 @@ public final class CarbonGuardCommand implements TabExecutor {
                     sync(() -> sender.sendMessage(plugin.messages().component(
                             count > 0 ? "command.unban-success" : "command.unban-none",
                             Map.of("target", target))));
+                });
+    }
+
+    private void unbind(CommandSender sender, String[] args) {
+        if (args.length < 2) {
+            sender.sendMessage(plugin.messages().component("command.unbind-usage"));
+            return;
+        }
+        String target = args[1];
+        CompletableFuture<String> keyFuture;
+        String lowerTarget = target.toLowerCase(Locale.ROOT);
+        if (lowerTarget.startsWith("xuid:") || lowerTarget.startsWith("uuid:")) {
+            keyFuture = CompletableFuture.completedFuture(lowerTarget);
+        } else {
+            keyFuture = resolveTarget(target).thenApply(optional ->
+                    optional.map(PlayerIdentity::key).orElse(null));
+        }
+        keyFuture.thenCompose(key -> key == null
+                        ? CompletableFuture.completedFuture(Boolean.FALSE)
+                        : plugin.adminService().unbind(key, sender.getName()))
+                .whenComplete((removed, error) -> {
+                    if (error != null) {
+                        plugin.getLogger().log(Level.WARNING, "解除绑定失败", error);
+                        sync(() -> sender.sendMessage(plugin.messages().component("command.operation-failed")));
+                        return;
+                    }
+                    if (!Boolean.TRUE.equals(removed)) {
+                        sync(() -> sender.sendMessage(plugin.messages().component(
+                                "command.unbind-none", Map.of("target", target))));
+                        return;
+                    }
+                    sync(() -> sender.sendMessage(plugin.messages().component(
+                            "command.unbind-success", Map.of("target", target))));
                 });
     }
 
@@ -306,7 +349,7 @@ public final class CarbonGuardCommand implements TabExecutor {
         if (args.length == 1) {
             return filter(SUBCOMMANDS, args[0]);
         }
-        if (args.length == 2 && List.of("ban", "unban", "status").contains(args[0].toLowerCase(Locale.ROOT))) {
+        if (args.length == 2 && List.of("ban", "unban", "unbind", "status").contains(args[0].toLowerCase(Locale.ROOT))) {
             List<String> names = new ArrayList<>();
             Bukkit.getOnlinePlayers().forEach(player -> names.add(player.getName()));
             return filter(names, args[1]);

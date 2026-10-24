@@ -53,5 +53,12 @@ class CidrMatcherTest {
     @Test
     void rejectsInvalidEntries() {
         assertTrue(CidrMatcher.of(List.of("999.1.1.1", "192.0.2.0/99", "nonsense")).isEmpty());
+        assertTrue(CidrMatcher.of(List.of("192.0.2.0/-1", "192.0.2.0/-5")).isEmpty());
+    }
+
+    @Test
+    void acceptsPrefixZeroAndRejectsPorts() {
+        assertTrue(CidrMatcher.of(List.of("0.0.0.0/0")).matches("203.0.113.1"));
+        assertTrue(CidrMatcher.of(List.of("1.2.3.4:25565")).isEmpty());
     }
 }

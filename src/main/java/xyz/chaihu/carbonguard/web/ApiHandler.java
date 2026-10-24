@@ -34,11 +34,13 @@ import java.util.regex.Pattern;
 import xyz.chaihu.carbonguard.CarbonGuardPlugin;
 import xyz.chaihu.carbonguard.config.CarbonGuardConfig;
 import xyz.chaihu.carbonguard.data.model.BanView;
+import xyz.chaihu.carbonguard.data.model.BindingView;
 import xyz.chaihu.carbonguard.data.model.ReviewRecord;
 import xyz.chaihu.carbonguard.data.model.ReviewStatus;
 import xyz.chaihu.carbonguard.data.model.StatsSnapshot;
 import xyz.chaihu.carbonguard.service.AuthException;
 import xyz.chaihu.carbonguard.service.BindTicketService;
+import xyz.chaihu.carbonguard.util.IpUtil;
 import xyz.chaihu.carbonguard.util.Tokens;
 
 /**
@@ -86,7 +88,7 @@ public final class ApiHandler implements HttpHandler {
     private void handlePublic(HttpExchange exchange, String path) {
         CarbonGuardConfig config = plugin.config();
         String ip = HttpSupport.clientIp(exchange, config.web().trustForwardedFor());
-        if (!publicLimiter.allow("public:" + ip, config.web().publicRateLimitPerMinute())) {
+        if (!publicLimiter.allow("public:" + IpUtil.networkKey(ip), config.web().publicRateLimitPerMinute())) {
             HttpSupport.error(exchange, 429, "RATE_LIMITED", "请求过于频繁，请稍后再试。");
             return;
         }
@@ -167,7 +169,7 @@ public final class ApiHandler implements HttpHandler {
     private void handleAdmin(HttpExchange exchange, String path) {
         CarbonGuardConfig config = plugin.config();
         String ip = HttpSupport.clientIp(exchange, config.web().trustForwardedFor());
-        if (!adminLimiter.allow("admin:" + ip, config.web().rateLimitPerMinute())) {
+        if (!adminLimiter.allow("admin:" + IpUtil.networkKey(ip), config.web().rateLimitPerMinute())) {
             HttpSupport.error(exchange, 429, "RATE_LIMITED", "请求过于频繁，请稍后再试。");
             return;
         }
@@ -185,6 +187,14 @@ public final class ApiHandler implements HttpHandler {
         }
         if (path.equals("/api/admin/reviews")) {
             reviews(exchange);
+            return;
+        }
+        if (path.equals("/api/admin/bindings")) {
+            bindings(exchange);
+            return;
+        }
+        if (path.equals("/api/admin/bindings/unbind")) {
+            unbindBinding(exchange);
             return;
         }
         Matcher review = REVIEW_PATH.matcher(path);
@@ -264,7 +274,9 @@ public final class ApiHandler implements HttpHandler {
         modules.addProperty("requireBinding", config.emailVerify().requireBinding());
         modules.addProperty("bindingGateOperational", plugin.bindingGateOperational());
         modules.addProperty("smtp", config.smtp().configured());
-        modules.addProperty("web", true);
+        modules.addProperty("smtpOperational", plugin.mailService() != null
+                && plugin.mailService().operational());
+        modules.addProperty("web", plugin.webServer() != null && plugin.webServer().isRunning());
         modules.addProperty("floodgate", plugin.identityResolver().floodgatePresent());
         modules.addProperty("geyser", plugin.identityResolver().geyserPresent());
         body.add("modules", modules);
@@ -313,8 +325,67 @@ public final class ApiHandler implements HttpHandler {
         return item;
     }
 
-    private void reviews(HttpExchange exchange) {
+    private void bindings(HttpExchange exchange) {
         if (!requireMethod(exchange, "GET")) {
+            return;
+        }
+        Map<String, String> query = HttpSupport.query(exchange);
+        String q = query.getOrDefault("q", "");
+        int limit = intParam(query.get("limit"), 50, 1, 100);
+        plugin.adminService().searchBindings(q, limit).whenComplete((bindings, error) -> {
+            if (error != null) {
+                fail(exchange, error);
+                return;
+            }
+            JsonObject body = new JsonObject();
+            JsonArray array = new JsonArray();
+            for (BindingView binding : bindings) {
+                array.add(bindingJson(binding));
+            }
+            body.add("bindings", array);
+            body.addProperty("count", array.size());
+            HttpSupport.ok(exchange, body);
+        });
+    }
+
+    private JsonObject bindingJson(BindingView binding) {
+        JsonObject item = new JsonObject();
+        item.addProperty("identity", binding.identityKey());
+        item.addProperty("player", binding.playerName());
+        item.addProperty("email", binding.email());
+        item.addProperty("qq", binding.qq());
+        item.addProperty("verifiedAt", binding.verifiedAt());
+        item.addProperty("lastSeen", binding.lastSeen());
+        return item;
+    }
+
+    private void unbindBinding(HttpExchange exchange) {
+        if (!requireMethod(exchange, "POST")) {
+            return;
+        }
+        JsonObject request = HttpSupport.readJson(exchange);
+        String identity = HttpSupport.string(request, "identity");
+        if (identity.isBlank()) {
+            HttpSupport.error(exchange, 400, "BAD_REQUEST", "identity 不能为空");
+            return;
+        }
+        String actor = "web:" + HttpSupport.clientIp(exchange, plugin.config().web().trustForwardedFor());
+        plugin.adminService().unbind(identity, actor).whenComplete((removed, error) -> {
+            if (error != null) {
+                fail(exchange, error);
+                return;
+            }
+            if (!Boolean.TRUE.equals(removed)) {
+                HttpSupport.error(exchange, 404, "NOT_FOUND", "绑定记录不存在。");
+                return;
+            }
+            JsonObject body = new JsonObject();
+            body.addProperty("message", "已解除该身份的游戏绑定。");
+            HttpSupport.ok(exchange, body);
+        });
+    }
+
+    private void reviews(HttpExchange exchange) {        if (!requireMethod(exchange, "GET")) {
             return;
         }
         Map<String, String> query = HttpSupport.query(exchange);

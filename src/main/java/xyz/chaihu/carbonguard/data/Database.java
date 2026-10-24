@@ -51,7 +51,9 @@ import xyz.chaihu.carbonguard.config.CarbonGuardConfig;
  * Writes are serialised on one thread to keep SQLite lock contention predictable.</p>
  */
 public final class Database implements AutoCloseable {
-    public static final int SCHEMA_VERSION = 1;
+    public static final int SCHEMA_VERSION = 2;
+    /** Bounded to keep a login flood from exhausting heap; callers see a failed future. */
+    private static final int WRITE_QUEUE_CAPACITY = 4_096;
     private static final List<String> SCHEMA = List.of(
             """
             CREATE TABLE IF NOT EXISTS identities (
@@ -140,6 +142,18 @@ public final class Database implements AutoCloseable {
             "CREATE INDEX IF NOT EXISTS idx_reviews_status ON reviews(status, created_at)",
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_reviews_pending_unique ON reviews(type, identity_key, ip) WHERE status = 'PENDING'",
             """
+            CREATE TABLE IF NOT EXISTS review_allowlist (
+                type TEXT NOT NULL,
+                identity_key TEXT NOT NULL,
+                ip TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL DEFAULT 0,
+                created_by TEXT,
+                PRIMARY KEY(type, identity_key, ip)
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_review_allowlist_expiry ON review_allowlist(expires_at)",
+            """
             CREATE TABLE IF NOT EXISTS login_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 identity_key TEXT NOT NULL,
@@ -202,8 +216,9 @@ public final class Database implements AutoCloseable {
         this.config = config;
         this.logger = logger;
         this.writes = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
-                new java.util.concurrent.LinkedBlockingQueue<>(), threadFactory("carbonguard-db-write", true),
-                new ThreadPoolExecutor.CallerRunsPolicy());
+                new java.util.concurrent.ArrayBlockingQueue<>(WRITE_QUEUE_CAPACITY),
+                threadFactory("carbonguard-db-write", true),
+                new ThreadPoolExecutor.AbortPolicy());
         this.webQueries = Executors.newFixedThreadPool(
                 Math.max(1, config.storage().pool().webMaximumSize()),
                 threadFactory("carbonguard-web-query", true));
@@ -305,13 +320,21 @@ public final class Database implements AutoCloseable {
 
     public <T> CompletableFuture<T> webAsync(SqlCall<T> call) {
         CompletableFuture<T> future = new CompletableFuture<>();
-        webQueries.execute(() -> {
-            try (Connection connection = web.getConnection()) {
-                future.complete(call.apply(connection));
-            } catch (Throwable t) {
-                future.completeExceptionally(t);
-            }
-        });
+        if (closed.get()) {
+            future.completeExceptionally(new java.util.concurrent.RejectedExecutionException("database closed"));
+            return future;
+        }
+        try {
+            webQueries.execute(() -> {
+                try (Connection connection = web.getConnection()) {
+                    future.complete(call.apply(connection));
+                } catch (Throwable t) {
+                    future.completeExceptionally(t);
+                }
+            });
+        } catch (java.util.concurrent.RejectedExecutionException e) {
+            future.completeExceptionally(e);
+        }
         return future;
     }
 
@@ -321,47 +344,65 @@ public final class Database implements AutoCloseable {
      */
     public CompletableFuture<Void> write(SqlWork work) {
         CompletableFuture<Void> future = new CompletableFuture<>();
-        writes.execute(() -> {
-            try (Connection connection = core.getConnection()) {
-                work.apply(connection);
-                future.complete(null);
-            } catch (Throwable t) {
-                logger.log(Level.WARNING, "数据库写入失败", t);
-                future.completeExceptionally(t);
-            }
-        });
+        if (closed.get()) {
+            future.completeExceptionally(new java.util.concurrent.RejectedExecutionException("database closed"));
+            return future;
+        }
+        try {
+            writes.execute(() -> {
+                try (Connection connection = core.getConnection()) {
+                    work.apply(connection);
+                    future.complete(null);
+                } catch (Throwable t) {
+                    logger.log(Level.WARNING, "数据库写入失败", t);
+                    future.completeExceptionally(t);
+                }
+            });
+        } catch (java.util.concurrent.RejectedExecutionException e) {
+            logger.log(Level.FINE, "数据库写队列已满，拒绝写入任务", e);
+            future.completeExceptionally(e);
+        }
         return future;
     }
 
     public <T> CompletableFuture<T> writeTransaction(SqlCall<T> work) {
         CompletableFuture<T> future = new CompletableFuture<>();
-        writes.execute(() -> {
-            try (Connection connection = core.getConnection()) {
-                boolean oldAutoCommit = connection.getAutoCommit();
-                connection.setAutoCommit(false);
-                try {
-                    T result = work.apply(connection);
-                    connection.commit();
-                    future.complete(result);
-                } catch (Throwable t) {
+        if (closed.get()) {
+            future.completeExceptionally(new java.util.concurrent.RejectedExecutionException("database closed"));
+            return future;
+        }
+        try {
+            writes.execute(() -> {
+                try (Connection connection = core.getConnection()) {
+                    boolean oldAutoCommit = connection.getAutoCommit();
+                    connection.setAutoCommit(false);
                     try {
-                        connection.rollback();
-                    } catch (SQLException rollbackError) {
-                        t.addSuppressed(rollbackError);
+                        T result = work.apply(connection);
+                        connection.commit();
+                        future.complete(result);
+                    } catch (Throwable t) {
+                        try {
+                            connection.rollback();
+                        } catch (SQLException rollbackError) {
+                            t.addSuppressed(rollbackError);
+                        }
+                        throw t;
+                    } finally {
+                        connection.setAutoCommit(oldAutoCommit);
                     }
-                    throw t;
-                } finally {
-                    connection.setAutoCommit(oldAutoCommit);
+                } catch (Throwable t) {
+                    if (t instanceof SQLException) {
+                        logger.log(Level.WARNING, "数据库事务失败", t);
+                    } else {
+                        logger.log(Level.FINE, "事务被业务校验回滚", t);
+                    }
+                    future.completeExceptionally(t);
                 }
-            } catch (Throwable t) {
-                if (t instanceof SQLException) {
-                    logger.log(Level.WARNING, "数据库事务失败", t);
-                } else {
-                    logger.log(Level.FINE, "事务被业务校验回滚", t);
-                }
-                future.completeExceptionally(t);
-            }
-        });
+            });
+        } catch (java.util.concurrent.RejectedExecutionException e) {
+            logger.log(Level.FINE, "数据库写队列已满，拒绝事务任务", e);
+            future.completeExceptionally(e);
+        }
         return future;
     }
 

@@ -21,7 +21,9 @@
 package xyz.chaihu.carbonguard.config;
 
 import java.nio.file.Path;
+import java.net.URI;
 import java.util.List;
+import xyz.chaihu.carbonguard.util.IpUtil;
 
 /**
  * Immutable, validated plugin configuration.
@@ -40,6 +42,7 @@ public record CarbonGuardConfig(
         Smtp smtp,
         EmailVerify emailVerify,
         Stats stats,
+        Review review,
         Whitelist whitelist
 ) {
     public record Storage(Path sqliteFile, Pool pool) {
@@ -81,6 +84,34 @@ public record CarbonGuardConfig(
     ) {
         public boolean hasUsableAdminKey() {
             return isAdminKeyStrong(adminKey);
+        }
+
+        /**
+         * A loopback public URL is unreachable for remote players. Treat it as
+         * unavailable whenever the binding gate is being enforced.
+         */
+        public boolean hasReachablePublicUrl() {
+            if (publicUrl == null || publicUrl.isBlank()) {
+                return false;
+            }
+            try {
+                URI uri = URI.create(publicUrl);
+                String host = uri.getHost();
+                if (host == null || host.isBlank()) {
+                    return false;
+                }
+                if (host.equalsIgnoreCase("localhost")) {
+                    return false;
+                }
+                if (!IpUtil.isLiteral(host)) {
+                    return true;
+                }
+                String normalized = IpUtil.normalize(host);
+                return !IpUtil.isLoopback(normalized) && !"0.0.0.0".equals(normalized)
+                        && !"::".equals(normalized);
+            } catch (RuntimeException e) {
+                return false;
+            }
         }
 
         public static boolean isAdminKeyStrong(String value) {
@@ -151,6 +182,13 @@ public record CarbonGuardConfig(
     }
 
     public record Stats(boolean enable, int retentionDays) {
+    }
+
+    /**
+     * Review workflow tuning. Approved reviews suppress duplicate reviews for the
+     * same (type, identity, ip) tuple for this many hours; 0 disables suppression.
+     */
+    public record Review(int approvalTtlHours) {
     }
 
     public record Whitelist(boolean enable, List<String> ips, List<String> players) {

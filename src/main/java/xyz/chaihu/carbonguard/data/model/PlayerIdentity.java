@@ -20,6 +20,8 @@
 
 package xyz.chaihu.carbonguard.data.model;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.UUID;
@@ -68,6 +70,28 @@ public record PlayerIdentity(
         return source == IdentitySource.UUID_FALLBACK;
     }
 
+    /**
+     * All keys under which an existing ban/binding could be stored. During a
+     * transient Floodgate/Geyser outage a Bedrock player can be resolved as
+     * {@code uuid:...}; checking the observed XUID and UUID as aliases prevents the
+     * ban/binding from silently disappearing.
+     */
+    public List<String> lookupKeys() {
+        List<String> keys = new ArrayList<>(3);
+        keys.add(key);
+        if (observedXuid != null && !observedXuid.isBlank()) {
+            String xuidKey = "xuid:" + observedXuid;
+            if (!keys.contains(xuidKey)) {
+                keys.add(xuidKey);
+            }
+        }
+        String uuidKey = "uuid:" + uuid;
+        if (!keys.contains(uuidKey)) {
+            keys.add(uuidKey);
+        }
+        return List.copyOf(keys);
+    }
+
     public boolean matchesWhitelistToken(String token) {
         if (token == null || token.isBlank()) {
             return false;
@@ -80,8 +104,13 @@ public record PlayerIdentity(
         if (xuid != null && candidate.equalsIgnoreCase(xuid)) {
             return true;
         }
+        if (observedXuid != null && candidate.equalsIgnoreCase(observedXuid)) {
+            return true;
+        }
         if (candidate.toLowerCase(Locale.ROOT).startsWith("xuid:")) {
-            return xuid != null && candidate.substring(5).equalsIgnoreCase(xuid);
+            String value = candidate.substring(5);
+            return (xuid != null && value.equalsIgnoreCase(xuid))
+                    || (observedXuid != null && value.equalsIgnoreCase(observedXuid));
         }
         if (candidate.toLowerCase(Locale.ROOT).startsWith("uuid:")) {
             return candidate.substring(5).equalsIgnoreCase(uuid.toString());

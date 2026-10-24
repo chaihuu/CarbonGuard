@@ -29,8 +29,26 @@ import java.util.regex.Pattern;
 /** Parses compact ban durations such as {@code 7d}, {@code 12h30m}, or {@code permanent}. */
 public final class DurationParser {
     private static final Pattern PART = Pattern.compile("(\\d+)([smhdw])");
+    private static final Pattern DURATION = Pattern.compile("(\\d+[smhdw])+");
 
     private DurationParser() {
+    }
+
+    public static boolean isPermanentToken(String input) {
+        if (input == null) {
+            return false;
+        }
+        String value = input.trim().toLowerCase(Locale.ROOT);
+        return value.equals("perm") || value.equals("permanent") || value.equals("forever")
+                || value.equals("永久");
+    }
+
+    public static boolean looksLikeDuration(String input) {
+        if (input == null) {
+            return false;
+        }
+        String value = input.trim().toLowerCase(Locale.ROOT);
+        return !value.isEmpty() && DURATION.matcher(value).matches();
     }
 
     public static Optional<Duration> parse(String input) {
@@ -40,8 +58,7 @@ public final class DurationParser {
         String value = input.trim().toLowerCase(Locale.ROOT);
         if (value.equals("perm") || value.equals("permanent") || value.equals("forever") || value.equals("永久")) {
             return Optional.of(Duration.ZERO);
-        }
-        Matcher matcher = PART.matcher(value);
+        }        Matcher matcher = PART.matcher(value);
         long seconds = 0;
         int matched = 0;
         while (matcher.find()) {

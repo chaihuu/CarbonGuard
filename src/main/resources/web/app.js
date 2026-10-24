@@ -79,7 +79,7 @@ async function api(path, options = {}) {
 }
 
 function setPage(page, updateHash = true) {
-  if (!['bind', 'bans', 'stats'].includes(page)) page = 'bind';
+  if (!['bind', 'bans', 'bindings', 'stats'].includes(page)) page = 'bind';
   state.page = page;
   document.querySelectorAll('.tab').forEach((tab) => {
     const active = tab.dataset.page === page;
@@ -98,6 +98,7 @@ function setPage(page, updateHash = true) {
 
   if (adminPage && state.adminKey) {
     if (page === 'bans') loadBans();
+    if (page === 'bindings') loadBindings();
     if (page === 'stats') loadStats();
   }
   if (updateHash) {
@@ -249,8 +250,59 @@ async function loadBans() {
   }
 }
 
-function renderBans(bans) {
-  const container = $('ban-list');
+async function loadBindings() {
+  if (!state.adminKey) return;
+  const query = $('binding-query').value.trim();
+  setStatus($('bindings-status'), '正在查询……');
+  try {
+    const data = await api(`/api/admin/bindings?q=${encodeURIComponent(query)}&limit=50`);
+    renderBindings(data.bindings || []);
+    $('binding-count').textContent = String(data.count || 0);
+    setStatus($('bindings-status'), query ? `查询完成：${data.count || 0} 条记录。` : '');
+  } catch (error) {
+    if (error.status === 401) {
+      setStatus($('unlock-status'), error.message, 'error');
+    } else {
+      setStatus($('bindings-status'), error.message, 'error');
+    }
+  }
+}
+
+function renderBindings(bindings) {
+  const container = $('binding-list');
+  if (!bindings.length) {
+    container.innerHTML = '<p class="empty">没有匹配的绑定记录。</p>';
+    return;
+  }
+  container.innerHTML = bindings.map((binding) => `
+    <article class="record">
+      <div class="record-head">
+        <div>
+          <strong>${escapeHtml(binding.player || '未知玩家')}</strong>
+          <span class="state on">已绑定</span>
+        </div>
+        <button class="ghost small danger" type="button" data-unbind="${escapeHtml(binding.identity || '')}">解绑</button>
+      </div>
+      <dl class="meta">
+        <div><dt>身份</dt><dd class="mono">${escapeHtml(binding.identity || '')}</dd></div>
+        <div><dt>邮箱</dt><dd>${escapeHtml(binding.email || '')}</dd></div>
+        <div><dt>QQ</dt><dd>${escapeHtml(binding.qq || '')}</dd></div>
+        <div><dt>验证时间</dt><dd>${formatDate(binding.verifiedAt)}</dd></div>
+      </dl>
+    </article>`).join('');
+}
+
+async function unbindIdentity(identity) {
+  if (!identity || !window.confirm(`确认解除 ${identity} 的绑定？`)) return;
+  try {
+    await api('/api/admin/bindings/unbind', { method: 'POST', body: { identity } });
+    await loadBindings();
+  } catch (error) {
+    setStatus($('bindings-status'), error.message, 'error');
+  }
+}
+
+function renderBans(bans) {  const container = $('ban-list');
   if (!bans.length) {
     container.innerHTML = '<p class="empty">没有匹配的封禁记录。</p>';
     return;
@@ -379,7 +431,7 @@ function renderStats(data) {
     ['ipLimit', '单 IP 限制', modules.ipLimitMode ? `模式 ${modules.ipLimitMode}，硬上限 ${modules.ipLimitHardLimit}` : ''],
     ['ban', '封禁模块', modules.ipAssociationAction ? `关联动作 ${modules.ipAssociationAction}` : ''],
     ['bindingGateOperational', '未绑定拦截', modules.requireBinding ? '已启用 require-binding' : '未要求绑定'],
-    ['smtp', 'SMTP', '邮件验证'],
+    ['smtpOperational', 'SMTP', '连接/认证可用'],
     ['floodgate', 'Floodgate', 'XUID 主键'],
     ['geyser', 'Geyser', '基岩版检测 / 真实 IP 依赖代理协议'],
     ['web', 'Web 面板', '管理密钥 + 速率限制']
@@ -458,6 +510,14 @@ document.addEventListener('DOMContentLoaded', () => {
     loadBans();
   });
   $('ban-refresh').addEventListener('click', loadBans);
+  $('binding-search-form').addEventListener('submit', (event) => {
+    event.preventDefault();
+    loadBindings();
+  });
+  $('binding-list').addEventListener('click', (event) => {
+    const button = event.target.closest('button[data-unbind]');
+    if (button) unbindIdentity(button.dataset.unbind);
+  });
   $('review-list').addEventListener('click', (event) => {
     const review = event.target.closest('button[data-review]');
     if (review) {
@@ -473,7 +533,7 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   const hash = location.hash.replace('#', '');
-  const page = initialToken ? 'bind' : (['bans', 'stats'].includes(hash) ? hash : 'bind');
+  const page = initialToken ? 'bind' : (['bans', 'bindings', 'stats'].includes(hash) ? hash : 'bind');
   setPage(page, false);
   if (state.ticketToken) {
     loadTicket(state.ticketToken);

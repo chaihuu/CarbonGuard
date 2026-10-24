@@ -26,8 +26,10 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import xyz.chaihu.carbonguard.data.model.AssociationHit;
@@ -233,7 +235,7 @@ public final class BanRepository {
     }
 
     public List<BanView> search(Connection connection, String query, int limit, long now) throws SQLException {
-        List<BanView> result = new ArrayList<>();
+        List<BanRecord> records = new ArrayList<>();
         String like = "%" + query + "%";
         String idQuery = query.startsWith("#") ? query.substring(1) : query;
         String sql = """
@@ -258,10 +260,39 @@ public final class BanRepository {
             ps.setInt(7, limit);
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
-                    BanRecord ban = mapBan(rs);
-                    result.add(new BanView(ban.id(), ban.identityKey(), ban.playerName(), ban.reason(),
-                            ban.createdBy(), ban.createdAt(), ban.expiresAt(), ban.active(),
-                            ban.liftedAt(), ban.liftedBy(), ipsForBan(connection, ban.id(), now)));
+                    records.add(mapBan(rs));
+                }
+            }
+        }
+        Map<Long, List<String>> ipsByBan = loadIpsForBans(connection, records, now);
+        List<BanView> result = new ArrayList<>(records.size());
+        for (BanRecord ban : records) {
+            result.add(new BanView(ban.id(), ban.identityKey(), ban.playerName(), ban.reason(),
+                    ban.createdBy(), ban.createdAt(), ban.expiresAt(), ban.active(),
+                    ban.liftedAt(), ban.liftedBy(), ipsByBan.getOrDefault(ban.id(), List.of())));
+        }
+        return result;
+    }
+
+    private Map<Long, List<String>> loadIpsForBans(Connection connection, List<BanRecord> bans, long now)
+            throws SQLException {
+        Map<Long, List<String>> result = new HashMap<>();
+        if (bans.isEmpty()) {
+            return result;
+        }
+        List<Long> ids = bans.stream().map(BanRecord::id).toList();
+        String placeholders = String.join(",", java.util.Collections.nCopies(ids.size(), "?"));
+        try (PreparedStatement ps = connection.prepareStatement(
+                "SELECT ban_id, ip FROM ban_ip_assoc WHERE ban_id IN (" + placeholders + ")"
+                        + " AND (expires_at=0 OR expires_at>?) ORDER BY recorded_at DESC")) {
+            int index = 1;
+            for (Long id : ids) {
+                ps.setLong(index++, id);
+            }
+            ps.setLong(index, now);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    result.computeIfAbsent(rs.getLong(1), ignored -> new ArrayList<>()).add(rs.getString(2));
                 }
             }
         }

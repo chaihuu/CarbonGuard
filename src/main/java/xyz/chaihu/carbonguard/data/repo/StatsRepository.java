@@ -123,6 +123,19 @@ public final class StatsRepository {
             ps.setLong(1, now - 7L * 86_400_000L);
             removed += ps.executeUpdate();
         }
+        try (PreparedStatement ps = connection.prepareStatement(
+                "DELETE FROM review_allowlist WHERE expires_at>0 AND expires_at<=?")) {
+            ps.setLong(1, now);
+            removed += ps.executeUpdate();
+        }
+        try (PreparedStatement ps = connection.prepareStatement("""
+                DELETE FROM ban_ip_assoc
+                WHERE expires_at>0 AND expires_at<=?
+                  AND NOT EXISTS (SELECT 1 FROM bans b WHERE b.id=ban_ip_assoc.ban_id AND b.active=1)
+                """)) {
+            ps.setLong(1, now);
+            removed += ps.executeUpdate();
+        }
         return removed;
     }
 

@@ -30,14 +30,20 @@ public record LoginDecision(
         String outcome,
         String detail,
         List<ReviewAlert> alerts,
-        boolean banStyle
+        boolean banStyle,
+        String sessionId
 ) {
     public static LoginDecision allow(String outcome, String detail, List<ReviewAlert> alerts) {
-        return new LoginDecision(true, null, outcome, detail, List.copyOf(alerts), false);
+        return new LoginDecision(true, null, outcome, detail, List.copyOf(alerts), false, null);
+    }
+
+    public static LoginDecision allow(String outcome, String detail, List<ReviewAlert> alerts,
+                                      String sessionId) {
+        return new LoginDecision(true, null, outcome, detail, List.copyOf(alerts), false, sessionId);
     }
 
     public static LoginDecision deny(Component message, String detail, boolean banStyle) {
-        return new LoginDecision(false, message, "DENIED", detail, List.of(), banStyle);
+        return new LoginDecision(false, message, "DENIED", detail, List.of(), banStyle, null);
     }
 
     public record ReviewAlert(ReviewType type, Long banId, String reason) {

@@ -39,7 +39,10 @@ final class FloodgateBridge {
         }
         FloodgatePlayer player = api.getPlayer(uuid);
         if (player == null) {
-            return Lookup.NOT_BEDROCK;
+            // Floodgate already identified this UUID as Bedrock, but the player record
+            // is temporarily unavailable. Preserve the Bedrock fallback instead of
+            // silently treating the account as a Java player.
+            return new Lookup(true, "");
         }
         String xuid = player.getXuid();
         return new Lookup(true, xuid == null ? "" : xuid.trim());

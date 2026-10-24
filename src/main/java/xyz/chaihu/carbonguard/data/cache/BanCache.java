@@ -26,6 +26,7 @@ import java.util.Map;
 import java.util.Optional;
 import xyz.chaihu.carbonguard.data.model.AssociationHit;
 import xyz.chaihu.carbonguard.data.model.BanRecord;
+import xyz.chaihu.carbonguard.util.IpUtil;
 import xyz.chaihu.carbonguard.util.TimeUtil;
 
 /**
@@ -66,9 +67,9 @@ public final class BanCache {
             if (!hit.activeAt(now) || !byId.containsKey(hit.banId())) {
                 continue;
             }
-            AssociationHit existing = ip.get(hit.ip());
+            AssociationHit existing = ip.get(IpUtil.networkKey(hit.ip()));
             if (existing == null || existing.recordedAt() < hit.recordedAt()) {
-                ip.put(hit.ip(), hit);
+                ip.put(IpUtil.networkKey(hit.ip()), hit);
             }
         }
         synchronized (mutex) {
@@ -89,7 +90,7 @@ public final class BanCache {
     }
 
     public Optional<AssociationHit> association(String ip) {
-        AssociationHit hit = snapshot.byIp().get(ip);
+        AssociationHit hit = snapshot.byIp().get(IpUtil.networkKey(ip));
         if (hit == null || !hit.activeAt(TimeUtil.now())) {
             return Optional.empty();
         }
@@ -115,9 +116,9 @@ public final class BanCache {
                 if (!hit.activeAt(now)) {
                     continue;
                 }
-                AssociationHit existing = byIp.get(hit.ip());
+                AssociationHit existing = byIp.get(IpUtil.networkKey(hit.ip()));
                 if (existing == null || existing.recordedAt() <= hit.recordedAt()) {
-                    byIp.put(hit.ip(), hit);
+                    byIp.put(IpUtil.networkKey(hit.ip()), hit);
                 }
             }
             snapshot = new Snapshot(Map.copyOf(identity), Map.copyOf(byId), Map.copyOf(byIp));

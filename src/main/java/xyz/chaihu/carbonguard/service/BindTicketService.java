@@ -132,6 +132,18 @@ public final class BindTicketService {
         hashByIdentity.clear();
     }
 
+    /** Drops all live tickets for an identity after an administrative unbind. */
+    public synchronized void invalidateIdentity(String identityKey) {
+        if (identityKey == null) {
+            return;
+        }
+        String hash = hashByIdentity.remove(identityKey);
+        if (hash != null) {
+            byHash.remove(hash);
+        }
+        byHash.entrySet().removeIf(entry -> entry.getValue().identity().key().equals(identityKey));
+    }
+
     private void remove(String hash) {
         Ticket ticket = byHash.remove(hash);
         if (ticket != null) {

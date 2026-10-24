@@ -23,30 +23,50 @@ package xyz.chaihu.carbonguard.web;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
-/** Fixed one-minute window limiter keyed by client IP. */
+/** Fixed one-minute window limiter keyed by client IP/network. */
 public final class RateLimiter {
     private static final long WINDOW_MILLIS = 60_000L;
+    private static final int MAX_KEYS = 50_000;
+    private static final long CLEANUP_INTERVAL_MILLIS = 30_000L;
     private final Map<String, Window> windows = new ConcurrentHashMap<>();
+    private final AtomicLong lastCleanup = new AtomicLong();
 
     public boolean allow(String key, int limit) {
         long now = System.currentTimeMillis();
         long windowStart = now - (now % WINDOW_MILLIS);
+        if (!windows.containsKey(key) && windows.size() >= MAX_KEYS) {
+            maybeCleanup(now, true);
+            if (windows.size() >= MAX_KEYS) {
+                // Bound memory under address-rotation floods. Existing clients keep
+                // their windows; new keys are rejected until the next cleanup.
+                return false;
+            }
+        }
         Window window = windows.compute(key, (ignored, existing) -> {
             if (existing == null || existing.start != windowStart) {
-                return new Window(windowStart, 1);
+                return new Window(windowStart);
             }
-            existing.count++;
+            existing.count.incrementAndGet();
             return existing;
         });
-        if (windows.size() > 10_000) {
-            cleanup(now);
-        }
-        return window.count <= limit;
+        maybeCleanup(now, false);
+        return window.count.get() <= limit;
     }
 
     public void cleanup() {
         cleanup(System.currentTimeMillis());
+    }
+
+    private void maybeCleanup(long now, boolean force) {
+        long previous = lastCleanup.get();
+        if (!force && (windows.size() <= 10_000 || now - previous < CLEANUP_INTERVAL_MILLIS)) {
+            return;
+        }
+        if (lastCleanup.compareAndSet(previous, now)) {
+            cleanup(now);
+        }
     }
 
     private void cleanup(long now) {
@@ -61,11 +81,11 @@ public final class RateLimiter {
 
     private static final class Window {
         private final long start;
-        private int count;
+        private final java.util.concurrent.atomic.AtomicInteger count =
+                new java.util.concurrent.atomic.AtomicInteger(1);
 
-        private Window(long start, int count) {
+        private Window(long start) {
             this.start = start;
-            this.count = count;
         }
     }
 }

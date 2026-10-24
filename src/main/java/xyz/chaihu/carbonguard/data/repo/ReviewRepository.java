@@ -28,6 +28,7 @@ import java.sql.Types;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import xyz.chaihu.carbonguard.data.model.ReviewAllowEntry;
 import xyz.chaihu.carbonguard.data.model.ReviewRecord;
 import xyz.chaihu.carbonguard.data.model.ReviewStatus;
 import xyz.chaihu.carbonguard.data.model.ReviewType;
@@ -110,6 +111,66 @@ public final class ReviewRepository {
                 "SELECT COUNT(*) FROM reviews WHERE status='PENDING'");
              ResultSet rs = ps.executeQuery()) {
             return rs.next() ? rs.getLong(1) : 0;
+        }
+    }
+
+    public List<ReviewAllowEntry> loadActiveAllowlist(Connection connection, long now) throws SQLException {
+        List<ReviewAllowEntry> result = new ArrayList<>();
+        try (PreparedStatement ps = connection.prepareStatement("""
+                SELECT type, identity_key, ip, created_at, expires_at, created_by
+                FROM review_allowlist WHERE expires_at=0 OR expires_at>?
+                """)) {
+            ps.setLong(1, now);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    result.add(new ReviewAllowEntry(
+                            ReviewType.valueOf(rs.getString(1)),
+                            rs.getString(2),
+                            rs.getString(3),
+                            rs.getLong(4),
+                            rs.getLong(5),
+                            rs.getString(6)));
+                }
+            }
+        }
+        return result;
+    }
+
+    public void allow(Connection connection, ReviewType type, String identityKey, String ip,
+                      long now, long expiresAt, String actor) throws SQLException {
+        try (PreparedStatement ps = connection.prepareStatement("""
+                INSERT INTO review_allowlist(type, identity_key, ip, created_at, expires_at, created_by)
+                VALUES(?,?,?,?,?,?)
+                ON CONFLICT(type, identity_key, ip) DO UPDATE SET
+                    created_at=excluded.created_at, expires_at=excluded.expires_at,
+                    created_by=excluded.created_by
+                """)) {
+            ps.setString(1, type.name());
+            ps.setString(2, identityKey);
+            ps.setString(3, ip);
+            ps.setLong(4, now);
+            ps.setLong(5, expiresAt);
+            ps.setString(6, actor);
+            ps.executeUpdate();
+        }
+    }
+
+    public boolean removeAllow(Connection connection, ReviewType type, String identityKey, String ip)
+            throws SQLException {
+        try (PreparedStatement ps = connection.prepareStatement(
+                "DELETE FROM review_allowlist WHERE type=? AND identity_key=? AND ip=?")) {
+            ps.setString(1, type.name());
+            ps.setString(2, identityKey);
+            ps.setString(3, ip);
+            return ps.executeUpdate() > 0;
+        }
+    }
+
+    public int purgeAllowlist(Connection connection, long now) throws SQLException {
+        try (PreparedStatement ps = connection.prepareStatement(
+                "DELETE FROM review_allowlist WHERE expires_at>0 AND expires_at<=?")) {
+            ps.setLong(1, now);
+            return ps.executeUpdate();
         }
     }
 

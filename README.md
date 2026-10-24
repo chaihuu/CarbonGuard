@@ -22,7 +22,9 @@ Paper 26.2 综合管控插件：基岩版真实 IP 接入、XUID 身份、单 IP
 | IP 关联封禁 | 封禁时记录当前与历史 IP，按 `REJECT` / `PENDING_REVIEW` / `LOG_ONLY` 处理；TTL 衰减 |
 | 邮箱绑定 | SMTP 端口可配，465 隐式 SSL / 其他端口 STARTTLS；验证码 10 分钟默认、单次消费、一次性 challenge token |
 | 未绑定拦截 | 登录时展示带一次性 Bearer ticket 的网页面板链接 |
-| Web 面板 | 绑定验证、封禁查询、统计概览；管理密钥 + 每 IP 限速 + 安全响应头 |
+| Web 面板 | 绑定验证、绑定管理/解绑、封禁查询、统计概览；管理密钥 + 每 IP 限速 + 安全响应头 |
+| 复核 | 通过后按 (类型, 身份, IP) 抑制重复待审，可配置有效期 |
+| 网络粒度 | IPv4 精确匹配；IPv6 默认按 /64 聚合，避免隐私地址轮换绕过限制 |
 | 数据层 | SQLite + HikariCP，双连接池隔离登录侧与 Web 查询；登录判定只读预热缓存 |
 
 ## 2. 安全边界（请先读）
@@ -59,18 +61,20 @@ proxies:
 
 `whitelist.ips` 会绕过未绑定拦截、单 IP 限制和 IP 关联封禁动作（直接按 XUID/UUID 封禁仍然生效）。
 
-如果 PROXY protocol 没生效，Paper/Geyser 后的所有玩家可能都显示为 `127.0.0.1`。此时把代理地址放进白名单，等于全部绕过。上线前必须确认插件看到的是玩家真实 IP。
+默认 `whitelist.ips` 为空。**不要**在 PROXY protocol 未生效时把 `127.0.0.1` 放进白名单：如果 Paper/Geyser 后的所有玩家都显示为 `127.0.0.1`，这会让所有玩家绕过未绑定、单 IP 和 IP 关联管控。上线前必须确认插件看到的是玩家真实 IP。
 
 ### 2.3 未绑定拦截的 fail-safe
 
 `email-verify.require-binding: true` 只有在以下条件同时满足时才真正生效：
 
 1. `smtp` 配置完整（host/from，以及 username 有值时 password 不为空）；
-2. Web 面板启动成功；
-3. `web.admin-key` 强度达标；
-4. `email-verify.enable` 为 true。
+2. 启动时 SMTP 连接/认证健康检查通过；
+3. Web 面板启动成功；
+4. `web.admin-key` 强度达标；
+5. `web.public-url` 是远程可达的非回环地址（建议 HTTPS）；
+6. `email-verify.enable` 为 true。
 
-任一项缺失时，插件会在启动日志中给出 ERROR，并**自动关闭未绑定拦截**，避免配置错误把全体玩家锁在服务器外。修复后执行 `/carbonguard reload`。
+任一项缺失时，插件会在启动日志中给出 ERROR，并**自动关闭未绑定拦截**，避免配置错误把全体玩家锁在服务器外。SMTP 中途不可用或连续发送失败时也会关闭拦截。修复后执行 `/carbonguard reload`。
 
 ## 3. 快速开始
 
@@ -202,6 +206,7 @@ NAT、校园网、公司出口、移动网络 CGNAT、VPN/代理会让大量合�
 | `/carbonguard status [玩家]` | 模块状态或玩家身份/绑定/封禁状态 |
 | `/carbonguard ban <玩家> [时长] [原因]` | 封禁并记录当前+历史 IP；省略时长=永久；时长如 `1h`、`7d`、`12h30m` |
 | `/carbonguard unban <玩家\|#编号>` | 解封并清除该封禁的 IP 关联 |
+| `/carbonguard unbind <玩家\|xuid:...\|uuid:...>` | 解除邮箱/QQ 绑定，并作废未使用的绑定 ticket/challenge |
 | `/carbonguard reload` | 重载配置、重启 Web、刷新缓存 |
 
 权限：`carbonguard.admin`（默认 OP）。所有子命令也可使用 `/cg` 或 `/carbon` 前缀，例如 `/cg status`。数据库操作全部异步，不阻塞主线程。
@@ -211,7 +216,8 @@ NAT、校园网、公司出口、移动网络 CGNAT、VPN/代理会让大量合�
 页面：
 
 - **绑定验证**：`/?bind=<ticket>`，支持手动粘贴令牌
-- **封禁查询**：按玩家名/XUID/UUID/封禁编号/IP 查询；待审队列通过（仅记录）、拒绝（踢出当前在线会话）、解封（解除封禁并清除 IP 关联）
+- **绑定管理**：按玩家名/XUID/UUID/邮箱/QQ 查询绑定，可解除绑定
+- **封禁查询**：按玩家名/XUID/UUID/封禁编号/IP 查询；待审队列通过（记录并在 `review.approval-ttl-hours` 内抑制同一 类型/身份/IP 的重复待审）、拒绝（踢出当前在线会话）、解封（解除封禁并清除 IP 关联）
 - **统计概览**：在线、身份、绑定、封禁、24h 登录/拒绝、7 天趋势、模块状态
 
 安全措施：
@@ -241,6 +247,8 @@ NAT、校园网、公司出口、移动网络 CGNAT、VPN/代理会让大量合�
 | GET | `/api/admin/bans?q=&limit=` | 封禁查询 |
 | GET | `/api/admin/reviews?status=PENDING` | 待审列表 |
 | POST | `/api/admin/reviews/{id}` | `{action:"APPROVE"\|"REJECT"}` |
+| GET | `/api/admin/bindings?q=&limit=` | 绑定查询 |
+| POST | `/api/admin/bindings/unbind` | `{identity:"xuid:..."}`，解除绑定 |
 | POST | `/api/admin/bans/{id}/unban` | 解封并清除关联 |
 
 ### 8.1 反向代理
@@ -281,7 +289,7 @@ web:
 
 数据文件：`plugins/CarbonGuard/carbonguard.db`（SQLite，WAL）。
 
-表：`identities`、`bindings`、`ip_history`、`bans`、`ban_ip_assoc`、`reviews`、`login_events`、`bind_tickets`、`email_challenges`、`identity_aliases`、`schema_meta`。
+表：`identities`、`bindings`、`ip_history`、`bans`、`ban_ip_assoc`、`reviews`、`review_allowlist`、`login_events`、`bind_tickets`、`email_challenges`、`identity_aliases`、`schema_meta`。
 
 异步设计：
 
@@ -316,7 +324,7 @@ Windows：
 ./gradlew test
 ```
 
-当前测试覆盖 CIDR、令牌/PBKDF2、时长解析、SQLite schema/事务/唯一约束、封禁与 IP 关联缓存、UUID_FALLBACK → XUID 迁移、验证码一次性与 ticket 单次消费。
+当前测试覆盖 CIDR（含负前缀/端口拒绝）、令牌/PBKDF2、时长解析、SQLite schema/事务/唯一约束、封禁与 IP 关联缓存、UUID_FALLBACK → XUID 迁移（含目标已存在）、身份 source 不降级、IPv6 /64 聚合、复核放行抑制、解绑、会话生命周期与 IPv6 计数。
 
 ## 11. 目录
 
@@ -344,7 +352,10 @@ src/main/resources/
 - 依赖 Paper 26.2 / Adventure 5.2；不要降到旧 Adventure 4.x。
 - Floodgate/Geyser API 是可选的 `compileOnly` 依赖，未安装时插件正常启动。
 - 真实 IP 的正确性最终取决于 Geyser/Paper 的 PROXY protocol 配置，插件无法在错误配置下“猜”出真实 IP。
-- 未绑定拦截在 SMTP/Web/密钥不可用时自动关闭，这是防锁死设计；生产必须监控启动日志。
+- 未绑定拦截在 SMTP/Web/密钥/public-url 不可用或 SMTP 健康检查失败时自动关闭，这是防锁死设计；生产必须监控启动日志。
+- IPv6 默认按 /64 聚合计入单 IP 限制、IP 关联和 Web 限速；如需更粗/更细粒度，应修改 `IpUtil.networkKey` 并在测试中覆盖。
+- 复核“通过”会抑制同一 (类型, 身份, IP) 的重复待审；不会自动放行封禁，也不会修改单 IP 上限。
+- 登录判定现在 fail-closed：内部异常会拒绝本次登录，而不是放行。
 - 单节点 SQLite；多节点需要外部数据库扩展。
 - 插件不提供 TLS 终止；公网必须使用 HTTPS 反向代理。
 

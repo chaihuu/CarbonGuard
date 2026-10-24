@@ -103,6 +103,15 @@ public final class ConfigLoader {
         if (bindAddress.startsWith("[") && bindAddress.endsWith("]")) {
             bindAddress = bindAddress.substring(1, bindAddress.length() - 1);
         }
+        if (!IpUtil.isLiteral(bindAddress) && !bindAddress.equalsIgnoreCase("localhost")) {
+            warnings.add("web.bind-address 不是 IP 字面量，已回退到 127.0.0.1。");
+            bindAddress = "127.0.0.1";
+        }
+        if (!bindAddress.equals("127.0.0.1") && !bindAddress.equals("::1")
+                && !bindAddress.equalsIgnoreCase("localhost") && !bindAddress.equals("0.0.0.0")
+                && !bindAddress.equals("::")) {
+            warnings.add("web.bind-address 不是回环或通配地址；请确认防火墙与反向代理已正确配置。");
+        }
         int webPort = clamp(cfg.getInt("web.port", 8_080), 1, 65_535, "web.port", warnings);
         String adminKey = expandSecret(string(cfg, "web.admin-key", ""));
         String publicUrl = string(cfg, "web.public-url", "");
@@ -119,20 +128,15 @@ public final class ConfigLoader {
             } else {
                 URI uri = URI.create(publicUrl);
                 String path = uri.getPath();
-                if (path != null && !path.isEmpty() && !"/".equals(path)) {
-                    warnings.add("web.public-url 含子路径；面板按域名根路径部署，已忽略子路径，请把反向代理挂在根路径。");
+                String query = uri.getRawQuery();
+                String fragment = uri.getRawFragment();
+                if ((path != null && !path.isEmpty() && !"/".equals(path))
+                        || (query != null && !query.isBlank())
+                        || (fragment != null && !fragment.isBlank())) {
+                    warnings.add("web.public-url 含子路径/查询/片段；面板按域名根路径部署，已忽略这些部分。");
                     publicUrl = uri.getScheme() + "://" + uri.getRawAuthority();
                 }
             }
-        }
-        if (!IpUtil.isLiteral(bindAddress) && !bindAddress.equalsIgnoreCase("localhost")) {
-            warnings.add("web.bind-address 不是 IP 字面量，已回退到 127.0.0.1。");
-            bindAddress = "127.0.0.1";
-        }
-        if (!bindAddress.equals("127.0.0.1") && !bindAddress.equals("::1")
-                && !bindAddress.equalsIgnoreCase("localhost") && !bindAddress.equals("0.0.0.0")
-                && !bindAddress.equals("::")) {
-            warnings.add("web.bind-address 不是回环或通配地址；请确认防火墙与反向代理已正确配置。");
         }
         int webRate = clamp(cfg.getInt("web.rate-limit-per-minute", 120), 1, 100_000,
                 "web.rate-limit-per-minute", warnings);
@@ -189,6 +193,8 @@ public final class ConfigLoader {
         boolean statsEnable = cfg.getBoolean("stats.enable", true);
         int retention = clamp(cfg.getInt("stats.retention-days", 30), 1, 3_650,
                 "stats.retention-days", warnings);
+        int reviewAllowHours = clamp(cfg.getInt("review.approval-ttl-hours", 168), 0, 87_600,
+                "review.approval-ttl-hours", warnings);
 
         boolean whitelistEnable = cfg.getBoolean("whitelist.enable", true);
         List<String> whitelistIps = stringList(cfg, "whitelist.ips");
@@ -207,6 +213,13 @@ public final class ConfigLoader {
         if (requireBinding && (!smtpEnable || smtpHost.isBlank() || smtpFrom.isBlank() || !webEnable)) {
             warnings.add("未绑定拦截已开启，但 SMTP 或 Web 面板配置不完整；启动时会自动降级关闭拦截以免锁死服务器。");
         }
+        CarbonGuardConfig.Web webConfig = new CarbonGuardConfig.Web(webEnable, bindAddress, webPort,
+                publicUrl, adminKey.trim(), webRate, publicRate, trustXff);
+        if (requireBinding && webEnable && webConfig.hasUsableAdminKey()
+                && !webConfig.hasReachablePublicUrl()) {
+            warnings.add("web.public-url 为空或指向回环/通配地址；远程未绑定玩家无法打开绑定链接，"
+                    + "未绑定拦截将保持关闭。请填写公网 HTTPS 地址。");
+        }
 
         CarbonGuardConfig config = new CarbonGuardConfig(
                 version,
@@ -218,13 +231,13 @@ public final class ConfigLoader {
                 new CarbonGuardConfig.Ban(banEnable,
                         new CarbonGuardConfig.Ban.IdUidXuid(idBan),
                         new CarbonGuardConfig.Ban.IpAssociation(assocEnable, assocAction, ttlHours)),
-                new CarbonGuardConfig.Web(webEnable, bindAddress, webPort, publicUrl, adminKey.trim(),
-                        webRate, publicRate, trustXff),
+                webConfig,
                 new CarbonGuardConfig.Smtp(smtpEnable, smtpHost, smtpPort, smtpUser, smtpPassword,
                         smtpFrom.trim(), smtpSsl, smtpTimeout),
                 new CarbonGuardConfig.EmailVerify(emailEnable, requireBinding, codeTtl, ticketTtl,
                         maxAttempts, cooldown, requireQqEmail, List.copyOf(domains)),
                 new CarbonGuardConfig.Stats(statsEnable, retention),
+                new CarbonGuardConfig.Review(reviewAllowHours),
                 new CarbonGuardConfig.Whitelist(whitelistEnable, List.copyOf(whitelistIps),
                         List.copyOf(whitelistPlayers))
         );
