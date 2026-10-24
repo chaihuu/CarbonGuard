@@ -53,7 +53,7 @@ command:
   status-server: |-
     {prefix}&b运行状态
     &7集成: &f{integrations}
-    &7Web: &f{web} &7| 未绑定拦截: &f{gate}
+    &7Web: &f{web} &7| 入服拦截: &f{gate}
     &7在线会话: &f{online} &7| 已绑定: &f{bindings} &7| IP 关联: &f{associations}
     &7自动更新: &f{update}
   status-player: |-
@@ -72,7 +72,7 @@ command:
   unban-success: "{prefix}&a已解封 &f{target}&a。"
   unban-none: "{prefix}&e没有找到生效中的封禁: &f{target}"
   reload-running: "{prefix}&7正在重载配置与 Web 面板……"
-  reload-success: "{prefix}&a重载完成。Web: &f{web}&a，未绑定拦截: &f{gate}&a。"
+  reload-success: "{prefix}&a重载完成。Web: &f{web}&a，入服拦截: &f{gate}&a。"
   reload-failed: "{prefix}&c重载失败，请查看控制台日志；旧配置仍在使用。"
   reload-warning: "{prefix}&e{warning}"
   operation-failed: "{prefix}&c操作失败，请查看控制台日志。"

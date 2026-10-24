@@ -31,6 +31,10 @@ public final class TestConfig {
     }
 
     public static CarbonGuardConfig create(Path database) {
+        return create(database, true);
+    }
+
+    public static CarbonGuardConfig create(Path database, boolean requireBinding) {
         return new CarbonGuardConfig(
                 1,
                 false,
@@ -43,7 +47,7 @@ public final class TestConfig {
                         "test-admin-key-with-enough-entropy-123", 120, 12, false),
                 new CarbonGuardConfig.Smtp(true, "smtp.qq.com", 587, "bot@qq.com", "auth-code",
                         "bot@qq.com", false, 10_000),
-                new CarbonGuardConfig.EmailVerify(true, true, 600, 1_800, 5, 60,
+                new CarbonGuardConfig.EmailVerify(true, requireBinding, 600, 1_800, 5, 60,
                         true, List.of("qq.com", "vip.qq.com", "foxmail.com")),
                 new CarbonGuardConfig.Stats(true, 30),
                 new CarbonGuardConfig.Review(168),

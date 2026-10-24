@@ -21,7 +21,7 @@ Paper 26.2 综合管控插件：基岩版真实 IP 接入、XUID 身份、单 IP
 | 单 IP 限制 | 在线会话 + 正在登录预留计数，支持宽限阈值、IP/CIDR 白名单、玩家白名单、`REJECT` / `WARN_ONLY` |
 | IP 关联封禁 | 封禁时记录当前与历史 IP，按 `REJECT` / `PENDING_REVIEW` / `LOG_ONLY` 处理；TTL 衰减 |
 | 邮箱绑定 | SMTP 端口可配，465 隐式 SSL / 其他端口 STARTTLS；验证码 10 分钟默认、单次消费、一次性 challenge token |
-| 未绑定拦截 | 登录时展示带一次性 Bearer ticket 的网页面板链接 |
+| 入服拦截 | 默认开启；未绑定 QQ 邮箱时拒绝登录并展示带一次性 Bearer ticket 的网页面板链接 |
 | Web 面板 | 绑定验证、绑定管理/解绑、封禁查询、统计概览；管理密钥 + 每 IP 限速 + 安全响应头 |
 | 复核 | 通过后按 (类型, 身份, IP) 抑制重复待审，可配置有效期 |
 | 网络粒度 | IPv4 精确匹配；IPv6 默认按 /64 聚合，避免隐私地址轮换绕过限制 |
@@ -61,13 +61,15 @@ proxies:
 
 ### 2.2 全局白名单与代理
 
-`whitelist.ips` 会绕过未绑定拦截、单 IP 限制和 IP 关联封禁动作（直接按 XUID/UUID 封禁仍然生效）。
+`whitelist.ips` 会绕过入服拦截、单 IP 限制和 IP 关联封禁动作（直接按 XUID/UUID 封禁仍然生效）。
 
 默认 `whitelist.ips` 为空。**不要**在 PROXY protocol 未生效时把 `127.0.0.1` 放进白名单：如果 Paper/Geyser 后的所有玩家都显示为 `127.0.0.1`，这会让所有玩家绕过未绑定、单 IP 和 IP 关联管控。上线前必须确认插件看到的是玩家真实 IP。
 
-### 2.3 未绑定拦截的 fail-safe
+### 2.3 入服拦截（默认开启）
 
-`email-verify.require-binding: true` 只有在以下条件同时满足时才真正生效：
+`email-verify.require-binding` 默认是 `true`：未完成 QQ 邮箱绑定的玩家会被拒绝入服，并在踢出消息中拿到一次性绑定链接。
+
+要让它真正生效且不误伤，部署前必须一次性满足以下条件：
 
 1. `smtp` 配置完整（host/from，以及 username 有值时 password 不为空）；
 2. 启动时 SMTP 连接/认证健康检查通过；
@@ -76,7 +78,9 @@ proxies:
 5. `web.public-url` 是远程可达的非回环地址（建议 HTTPS）；
 6. `email-verify.enable` 为 true。
 
-任一项缺失时，插件会在启动日志中给出 ERROR，并**自动关闭未绑定拦截**，避免配置错误把全体玩家锁在服务器外。SMTP 中途不可用或连续发送失败时也会关闭拦截。修复后执行 `/carbonguard reload`。
+任一项缺失时，插件会在启动日志中给出 ERROR，并**自动降级关闭入服拦截**，避免配置错误把全体玩家锁在服务器外。SMTP 中途不可用或连续发送失败时也会关闭拦截。修复后执行 `/carbonguard reload`。
+
+> 首次安装且未填写 `admin-key`/`smtp`/`public-url` 时，拦截会处于“已配置但未生效”的降级状态；`/carbonguard status` 会显示“入服拦截: 关闭”。完成第 3 节配置后重新执行 `/carbonguard reload` 即正式开启。
 
 ## 3. 快速开始
 
@@ -145,7 +149,7 @@ proxies:
 
 8. 执行 `/carbonguard reload` 或重启服务器。
 
-首次默认配置中 `web.admin-key` 为空、SMTP 未填完整，因此 Web 面板不会启动，未绑定拦截会自动降级关闭。这是刻意的安全行为，不会把服务器锁死。
+首次默认配置中 `web.admin-key` 为空、SMTP 未填完整，因此 Web 面板不会启动，入服拦截会自动降级关闭。这是刻意的安全行为，不会把服务器锁死；填完 `admin-key`、SMTP 与 `public-url` 并 `/carbonguard reload` 后即按默认配置正式拦截未绑定玩家。
 
 ## 4. 身份模型
 
@@ -177,7 +181,7 @@ Geyser 直连且没有 Floodgate 时，无法通过 Floodgate API 获取 XUID。
 
 1. 解析身份与真实 IP
 2. 直接封禁（XUID/UUID）→ 立即拒绝
-3. 未绑定拦截 → 拒绝并展示网页面板链接（带一次性 ticket）
+3. 入服拦截（默认开启）→ 未绑定玩家被拒绝并展示网页面板链接（带一次性 ticket）
 4. IP 关联封禁动作
    - `REJECT` → 拒绝
    - `PENDING_REVIEW` → 放行并写待审
@@ -368,7 +372,7 @@ src/main/resources/
 - 依赖 Paper 26.2 / Adventure 5.2；不要降到旧 Adventure 4.x。
 - Floodgate/Geyser API 是可选的 `compileOnly` 依赖，未安装时插件正常启动。
 - 真实 IP 的正确性最终取决于 Geyser/Paper 的 PROXY protocol 配置，插件无法在错误配置下“猜”出真实 IP。
-- 未绑定拦截在 SMTP/Web/密钥/public-url 不可用或 SMTP 健康检查失败时自动关闭，这是防锁死设计；生产必须监控启动日志。
+- 入服拦截默认开启，但在 SMTP/Web/密钥/public-url 不可用或 SMTP 健康检查失败时自动降级关闭，这是防锁死设计；生产必须监控启动日志。
 - IPv6 默认按 /64 聚合计入单 IP 限制、IP 关联和 Web 限速；如需更粗/更细粒度，应修改 `IpUtil.networkKey` 并在测试中覆盖。
 - 复核“通过”会抑制同一 (类型, 身份, IP) 的重复待审；不会自动放行封禁，也不会修改单 IP 上限。
 - 登录判定现在 fail-closed：内部异常会拒绝本次登录，而不是放行。

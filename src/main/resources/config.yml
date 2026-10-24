@@ -103,7 +103,7 @@ ban:
 # Web 面板
 # 除绑定验证中携带一次性 token 的公开端点外，全部管理接口都要求 admin-key。
 # admin-key 至少 24 字符、至少 10 种不同字符；强度不足时面板不会启动，
-# 未绑定拦截也会自动降级关闭，避免锁死服务器。
+# 入服拦截也会自动降级关闭，避免锁死服务器。
 #
 # 支持在 admin-key 中写 ${ENV:CARBONGUARD_WEB_KEY} 从环境变量读取，避免把密钥写进
 # 配置文件。README 中说明了生成方式。
@@ -116,9 +116,8 @@ web:
   bind-address: "127.0.0.1"
   port: 8080
   # 玩家踢出消息里展示的地址；留空时按 bind-address/port 推导。
-  # 公网部署请填写真实外部地址，例如 https://carbonguard.example.com
-  # 注意：require-binding=true 时，public-url 为空、localhost 或回环地址会
-  # 被视为不可用，未绑定拦截会自动关闭（避免把远程玩家锁在服务器外）。
+  # 入服拦截默认开启，因此这里必须填写远程玩家可达的真实外部地址，
+  # 例如 https://carbonguard.example.com；否则拦截会自动降级关闭（防止锁服）。
   public-url: ""
   admin-key: ""
   # 管理接口每 IP 每分钟请求上限（在鉴权之前执行）
@@ -153,9 +152,11 @@ smtp:
 # 邮箱验证 / QQ 绑定
 # 验证码默认 10 分钟过期，单次使用；验证成功后立即失效并由数据库事务消费。
 # 绑定链接还包含一次性 Bearer ticket，防止未认证的网页请求任意绑定他人账号。
-# 若 SMTP、Web、public-url 或 admin-key 不可用，require-binding 会在启动时自动
-# 降级关闭，避免所有玩家被锁在服务器外。启动时会对 SMTP 做一次连接/认证健康检查；
-# 不可用时同样自动关闭。修复配置后执行 /carbonguard reload。
+# require-binding 默认开启：未完成的 QQ 邮箱绑定会拦截入服。
+# 防锁死：若 SMTP、Web、public-url 或 admin-key 不可用，或启动时 SMTP 连接/认证
+# 健康检查失败，require-binding 会自动降级关闭，避免所有玩家被锁在服务器外；
+# 每次降级都会在启动日志和 /carbonguard status 中提示。修复配置后执行
+# /carbonguard reload。部署清单见 README 2.3。
 # ----------------------------------------------------------------------------
 email-verify:
   enable: true
@@ -213,7 +214,7 @@ update-check:
 
 # ----------------------------------------------------------------------------
 # 全局白名单（自动管控的逃生通道）
-# 命中的 IP/玩家会绕过：未绑定拦截、单 IP 限制、IP 关联封禁动作。
+# 命中的 IP/玩家会绕过：入服拦截、单 IP 限制、IP 关联封禁动作。
 # 直接按 XUID/UUID 的封禁仍然生效，避免白名单意外解除人工封禁。
 # 仅填入你完全信任的本机/管理出口/固定玩家组。
 #

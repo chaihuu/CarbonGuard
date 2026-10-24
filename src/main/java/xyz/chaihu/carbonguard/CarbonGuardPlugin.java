@@ -137,12 +137,12 @@ public final class CarbonGuardPlugin extends JavaPlugin {
         startBStats();
         if (config.emailVerify().enable() && config.emailVerify().requireBinding()
                 && !bindingGateConfigurationComplete()) {
-            getLogger().severe("未绑定拦截已开启，但 SMTP/Web/管理密钥/public-url 不完整；"
+            getLogger().severe("入服拦截已开启，但 SMTP/Web/管理密钥/public-url 不完整；"
                     + "为防止锁死服务器，该拦截已自动降级关闭。修复配置后执行 /carbonguard reload。");
         }
         scheduleTasks();
         getLogger().info("CarbonGuard 已启用 | Paper 26.2 | " + identityResolver.integrationSummary()
-                + " | 未绑定拦截=" + (bindingGateOperational() ? "开启" : "关闭"));
+                + " | 入服拦截=" + (bindingGateOperational() ? "开启" : "关闭"));
     }
 
     /**
@@ -288,12 +288,12 @@ public final class CarbonGuardPlugin extends JavaPlugin {
                 } else if (Boolean.TRUE.equals(healthy)) {
                     boolean required = config.emailVerify().enable() && config.emailVerify().requireBinding();
                     getLogger().info(required
-                            ? "SMTP 可用，未绑定拦截状态: " + (bindingGateOperational() ? "开启" : "关闭")
+                            ? "SMTP 可用，入服拦截状态: " + (bindingGateOperational() ? "开启" : "关闭")
                             : "SMTP 健康检查通过。");
                 } else if (config.emailVerify().enable() && config.emailVerify().requireBinding()) {
-                    getLogger().warning("SMTP 不可用，未绑定拦截保持关闭。");
+                    getLogger().warning("SMTP 不可用，入服拦截保持关闭。");
                 } else {
-                    getLogger().info("SMTP 当前不可用（未启用未绑定拦截，不影响登录）。");
+                    getLogger().info("SMTP 当前不可用（未启用入服拦截，不影响登录）。");
                 }
             });
         } catch (Throwable error) {
@@ -430,7 +430,7 @@ public final class CarbonGuardPlugin extends JavaPlugin {
         scheduleTasks();
         if (config.emailVerify().enable() && config.emailVerify().requireBinding()
                 && !bindingGateOperational()) {
-            warnings.add("未绑定拦截因 SMTP/Web/密钥/public-url 不完整或 SMTP 不可用而关闭。");
+            warnings.add("入服拦截因 SMTP/Web/密钥/public-url 不完整或 SMTP 不可用而关闭。");
         }
         return new ReloadResult(bindingGateOperational(), webServer != null && webServer.isRunning(),
                 List.copyOf(warnings));

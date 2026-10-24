@@ -430,7 +430,7 @@ function renderStats(data) {
   const labels = [
     ['ipLimit', '单 IP 限制', modules.ipLimitMode ? `模式 ${modules.ipLimitMode}，硬上限 ${modules.ipLimitHardLimit}` : ''],
     ['ban', '封禁模块', modules.ipAssociationAction ? `关联动作 ${modules.ipAssociationAction}` : ''],
-    ['bindingGateOperational', '未绑定拦截', modules.requireBinding ? '已启用 require-binding' : '未要求绑定'],
+    ['bindingGateOperational', '入服拦截', modules.requireBinding ? '已启用 require-binding' : '未要求绑定'],
     ['smtpOperational', 'SMTP', '连接/认证可用'],
     ['bstats', 'bStats', '匿名统计'],
     ['updateCheck', '自动更新', '异步检查 GitHub Releases'],

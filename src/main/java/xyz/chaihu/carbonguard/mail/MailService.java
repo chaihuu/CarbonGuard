@@ -116,7 +116,7 @@ public final class MailService implements MailSender, AutoCloseable {
             } catch (Exception e) {
                 healthy = Boolean.FALSE;
                 logger.log(Level.WARNING, "SMTP 健康检查失败 (" + smtp.host() + ":" + smtp.port()
-                        + ")，未绑定拦截将保持关闭", e);
+                        + ")，入服拦截将保持关闭", e);
                 return false;
             }
         }, executor);

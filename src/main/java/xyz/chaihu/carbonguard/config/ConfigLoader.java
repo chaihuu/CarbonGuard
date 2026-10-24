@@ -222,23 +222,27 @@ public final class ConfigLoader {
         validateCidrs(whitelistIps, "whitelist.ips", warnings);
 
         if (webEnable && !webKeyStrong(adminKey)) {
-            warnings.add("web.admin-key 未设置或强度不足（至少 24 字符、10 个不同字符）；Web 面板和未绑定拦截将保持关闭，直到修复。");
+            warnings.add("web.admin-key 未设置或强度不足（至少 24 字符、10 个不同字符）；Web 面板和入服拦截将保持关闭，直到修复。");
         }
         if (smtpEnable && (smtpHost.isBlank() || smtpFrom.isBlank())) {
-            warnings.add("SMTP 已启用但 host/from 未配置完整；邮件验证不可用，未绑定拦截会自动降级关闭。");
+            warnings.add("SMTP 已启用但 host/from 未配置完整；邮件验证不可用，入服拦截会自动降级关闭。");
         }
         if (smtpEnable && !smtpUser.isBlank() && smtpPassword.isBlank()) {
-            warnings.add("SMTP username 已配置但 password/授权码为空；邮件验证不可用，未绑定拦截会自动降级关闭。");
-        }
-        if (requireBinding && (!smtpEnable || smtpHost.isBlank() || smtpFrom.isBlank() || !webEnable)) {
-            warnings.add("未绑定拦截已开启，但 SMTP 或 Web 面板配置不完整；启动时会自动降级关闭拦截以免锁死服务器。");
+            warnings.add("SMTP username 已配置但 password/授权码为空；邮件验证不可用，入服拦截会自动降级关闭。");
         }
         CarbonGuardConfig.Web webConfig = new CarbonGuardConfig.Web(webEnable, bindAddress, webPort,
                 publicUrl, adminKey.trim(), webRate, publicRate, trustXff);
         if (requireBinding && webEnable && webConfig.hasUsableAdminKey()
                 && !webConfig.hasReachablePublicUrl()) {
             warnings.add("web.public-url 为空或指向回环/通配地址；远程未绑定玩家无法打开绑定链接，"
-                    + "未绑定拦截将保持关闭。请填写公网 HTTPS 地址。");
+                    + "入服拦截将保持关闭。请填写公网 HTTPS 地址。");
+        }
+
+        if (emailEnable && requireBinding) {
+            // Admission gating is enabled by default; make the fail-safe state
+            // explicit at load time instead of leaving it to the enable log only.
+            validateBindingGateReadiness(webConfig, smtpEnable, smtpHost, smtpFrom, smtpUser,
+                    smtpPassword, warnings);
         }
 
         CarbonGuardConfig config = new CarbonGuardConfig(
@@ -269,6 +273,29 @@ public final class ConfigLoader {
 
     private static boolean webKeyStrong(String key) {
         return CarbonGuardConfig.Web.isAdminKeyStrong(key);
+    }
+
+    /**
+     * Checks everything except the live SMTP probe (which only the plugin can run).
+     * Missing pieces are reported as a warning so a fresh install makes the
+     * fail-safe state obvious in the log and in {@code /carbonguard status}.
+     */
+    private static void validateBindingGateReadiness(CarbonGuardConfig.Web web, boolean smtpEnable,
+                                                     String smtpHost, String smtpFrom, String smtpUser,
+                                                     String smtpPassword, List<String> warnings) {
+        if (!smtpEnable || smtpHost.isBlank() || smtpFrom.isBlank()
+                || (!smtpUser.isBlank() && smtpPassword.isBlank())) {
+            warnings.add("入服拦截（email-verify.require-binding）默认开启，但 SMTP 配置不完整；"
+                    + "启动时若 SMTP 健康检查失败，拦截会自动降级关闭。");
+        }
+        if (!web.enable()) {
+            warnings.add("入服拦截默认开启，但 web.enable=false；绑定链接无法打开，拦截会自动降级关闭。");
+        } else if (!web.hasUsableAdminKey()) {
+            warnings.add("入服拦截默认开启，但 web.admin-key 强度不足；Web 面板不可用，拦截会自动降级关闭。");
+        } else if (!web.hasReachablePublicUrl()) {
+            warnings.add("入服拦截默认开启，但 web.public-url 指向回环/通配地址；"
+                    + "远程玩家无法打开绑定链接，拦截会自动降级关闭。");
+        }
     }
 
     private static void validateCidrs(List<String> entries, String path, List<String> warnings) {
