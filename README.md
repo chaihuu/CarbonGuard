@@ -8,7 +8,7 @@ Paper 26.2 综合管控插件：基岩版真实 IP 接入、XUID 身份、单 IP
 - Java 包名：`xyz.chaihu.carbonguard`
 - 主类：`xyz.chaihu.carbonguard.CarbonGuardPlugin`
 - 目标平台：Paper 26.2（Adventure 5.2）
-- 构建产物：`build/libs/CarbonGuard-1.0.0.jar`
+- 构建产物：`build/libs/CarbonGuard-1.1.0.jar`
 - 源码仓库：https://github.com/chaihuu/CarbonGuard
 - 许可证：GPL-3.0-only，完整文本见 [LICENSE](LICENSE)
 
@@ -79,7 +79,7 @@ proxies:
 ## 3. 快速开始
 
 1. 安装 Paper 26.2，Java 25。
-2. 把 `CarbonGuard-1.0.0.jar` 放入 `plugins/`。
+2. 把 `CarbonGuard-1.1.0.jar` 放入 `plugins/`。
 3. 启动一次服务器，生成 `plugins/CarbonGuard/config.yml` 与 `messages.yml`。
 4. 设置强管理密钥：
 

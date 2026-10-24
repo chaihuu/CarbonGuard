@@ -24,7 +24,7 @@ plugins {
 }
 
 group = "xyz.chaihu"
-version = "1.0.0"
+version = "1.1.0"
 description = "CarbonGuard - Paper 26.2 access control with GPL-3.0-only licensing"
 
 repositories {

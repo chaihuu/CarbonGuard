@@ -36,7 +36,7 @@ Windows PowerShell：
 产物：
 
 ```text
-build/libs/CarbonGuard-1.0.0.jar
+build/libs/CarbonGuard-1.1.0.jar
 ```
 
 这是一个包含运行时依赖的 shaded jar，直接放入 Paper 的 `plugins/` 即可。不要把 `-sources`、`-javadoc` 或其他 classifier 当成插件 jar。
@@ -131,7 +131,7 @@ storage:
 # 准备一个 Paper 26.2 测试服
 java -Xms512M -Xmx1G -jar paper-26.2-134.jar --nogui
 
-# 把 build/libs/CarbonGuard-1.0.0.jar 放入 plugins/
+# 把 build/libs/CarbonGuard-1.1.0.jar 放入 plugins/
 ```
 
 期望日志：
@@ -236,7 +236,7 @@ LICENSES/EPL-2.0.txt       # Jakarta Mail / Activation
 
 - [ ] `./gradlew clean build` 成功
 - [ ] `./gradlew verifyLicenseHeaders` 成功
-- [ ] `build/libs/CarbonGuard-1.0.0.jar` 中包含 `plugin.yml`、`config.yml`、`messages.yml`、`web/*`
+- [ ] `build/libs/CarbonGuard-1.1.0.jar` 中包含 `plugin.yml`、`config.yml`、`messages.yml`、`web/*`
 - [ ] jar 中包含 `LICENSE`、`COPYING`、`THIRD_PARTY_NOTICES.md`、`LICENSES/*`
 - [ ] 在 Paper 26.2 + Java 25 上启动无 `NoClassDefFoundError`
 - [ ] `web.admin-key` 为强随机值，或来自环境变量
