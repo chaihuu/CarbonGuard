@@ -82,6 +82,9 @@ dependencies {
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
     // Only needed because the shaded plugin intentionally excludes Paper's SLF4J.
     testRuntimeOnly("org.slf4j:slf4j-api:2.0.17")
+    // paper-api is compileOnly for the plugin, so the config-migration test (which uses
+    // YamlConfiguration directly) needs it on the test classpath explicitly.
+    testImplementation("io.papermc.paper:paper-api:26.2.build.134-stable")
 }
 
 java {
